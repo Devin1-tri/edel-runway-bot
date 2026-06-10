@@ -138,107 +138,109 @@ function parseCookieString(cookieStr, domain = 'runway.edel.finance') {
 }
 
 // ─────────────────────────────────────────────
-//  IMPORT METHOD: Cookie string from DevTools
+//  Build Playwright-compatible state from input
 // ─────────────────────────────────────────────
-/**
- * Import session by pasting the Cookie header value from Chrome DevTools Network tab.
- *
- * How to get it:
- *   1. Login di Chrome
- *   2. F12 → Network tab
- *   3. Refresh halaman / klik halaman apapun
- *   4. Klik salah satu request ke "runway.edel.finance"
- *   5. Scroll ke "Request Headers" → cari "Cookie:"
- *   6. Klik kanan value-nya → Copy value
- *   7. Paste di sini
- */
-export async function importFromCookieString() {
-  console.log('');
-  console.log('╔══════════════════════════════════════════════════════════╗');
-  console.log('║   🍪 IMPORT SESSION DARI CHROME (Cookie Header)        ║');
-  console.log('╚══════════════════════════════════════════════════════════╝');
-  console.log('');
-  console.log('Cara ambil Cookie dari Chrome:');
-  console.log('');
-  console.log('  1. Buka Chrome → login ke https://runway.edel.finance');
-  console.log('  2. Setelah login, buka halaman /listing-calls');
-  console.log('  3. Tekan F12 (DevTools)');
-  console.log('  4. Klik tab "Network"');
-  console.log('  5. Refresh halaman (Ctrl+R)');
-  console.log('  6. Klik request pertama (biasanya "listing-calls")');
-  console.log('  7. Di panel kanan, scroll ke "Request Headers"');
-  console.log('  8. Cari baris "Cookie:" → klik kanan → Copy value');
-  console.log('  9. Paste di bawah ini');
-  console.log('');
-
-  const cookieStr = await ask('📋 Paste Cookie value > ');
-
-  if (!cookieStr) {
-    logger.error('❌ Tidak ada data.');
-    return false;
-  }
-
-  const cookies = parseCookieString(cookieStr);
-
-  if (cookies.length === 0) {
-    logger.error('❌ Gagal parse cookies. Pastikan format: name1=value1; name2=value2');
-    return false;
-  }
-
-  // Now ask for localStorage (Privy tokens)
-  console.log('');
-  console.log('─'.repeat(58));
-  console.log('');
-  console.log('Sekarang kita perlu ambil data Privy (localStorage):');
-  console.log('');
-  console.log('  1. Masih di F12, klik tab "Application"');
-  console.log('  2. Di sidebar kiri, klik "Local Storage"');
-  console.log('     → klik "https://runway.edel.finance"');
-  console.log('  3. Kamu akan lihat daftar Key-Value');
-  console.log('  4. Cari key yang mengandung "privy" atau "auth"');
-  console.log('     (biasanya: privy:token, privy:session, dll)');
-  console.log('');
-  console.log('  Caranya: klik satu-satu pada key yg mengandung');
-  console.log('  "privy", copy Value-nya (klik kanan → Copy value)');
-  console.log('');
-  console.log('  Atau kalau mau skip (cookies saja), tekan Enter kosong.');
-  console.log('');
-
-  const localStorageItems = [];
-  let keepAsking = true;
-  let itemNum = 1;
-
-  while (keepAsking) {
-    const key = await ask(`  Key ${itemNum} (atau Enter untuk selesai) > `);
-    if (!key) {
-      keepAsking = false;
-      break;
-    }
-    const value = await ask(`  Value ${itemNum} > `);
-    if (value) {
-      localStorageItems.push({ name: key, value });
-      logger.info(`   ✓ Saved: ${key}`);
-      itemNum++;
-    }
-  }
-
-  // Build Playwright-compatible state
-  const state = {
+function buildState(cookies) {
+  return {
     cookies,
     origins: [
       {
         origin: 'https://runway.edel.finance',
-        localStorage: localStorageItems,
+        localStorage: [],
       },
     ],
   };
+}
 
+// ─────────────────────────────────────────────
+//  IMPORT: Main function
+// ─────────────────────────────────────────────
+export async function importSession() {
+  console.log('');
+  console.log('╔══════════════════════════════════════════════════════════╗');
+  console.log('║         🔐 IMPORT SESSION LOGIN                        ║');
+  console.log('╚══════════════════════════════════════════════════════════╝');
+  console.log('');
+  console.log('  Cara ambil Cookie dari Chrome:');
+  console.log('');
+  console.log('  1. Buka Chrome → login ke https://runway.edel.finance');
+  console.log('  2. Setelah masuk, buka halaman /listing-calls');
+  console.log('  3. Tekan F12 (DevTools) → klik tab "Network"');
+  console.log('  4. Refresh halaman (Ctrl+R)');
+  console.log('  5. Klik request pertama di daftar');
+  console.log('  6. Di panel kanan, cari "Request Headers"');
+  console.log('  7. Cari baris "Cookie:"');
+  console.log('  8. Klik kanan pada value → Copy value');
+  console.log('  9. Paste di bawah ini (SEMUA, panjang gapapa)');
+  console.log('');
+  console.log('  Yang penting ada: edel_session=eyJ...');
+  console.log('');
+
+  const input = await ask('📋 Paste Cookie > ');
+
+  if (!input) {
+    logger.error('❌ Tidak ada data.');
+    return false;
+  }
+
+  // Detect what format the user pasted
+  let cookies = [];
+
+  if (input.includes('=') && (input.includes(';') || input.startsWith('edel_session='))) {
+    // User pasted full cookie string or just edel_session=xxx
+    cookies = parseCookieString(input);
+  } else if (input.startsWith('eyJ')) {
+    // User pasted just the JWT token value (starts with eyJ = base64 {"v"...)
+    logger.info('🔍 Detected raw JWT token, wrapping as edel_session cookie...');
+    cookies = [
+      {
+        name: 'edel_session',
+        value: input,
+        domain: 'runway.edel.finance',
+        path: '/',
+        expires: Date.now() / 1000 + 86400 * 30,
+        httpOnly: false,
+        secure: true,
+        sameSite: 'Lax',
+      },
+    ];
+  } else {
+    // Try parsing as cookie string anyway
+    cookies = parseCookieString(input);
+  }
+
+  if (cookies.length === 0) {
+    logger.error('❌ Gagal parse cookies.');
+    logger.info('   Format yang benar: name1=value1; name2=value2; ...');
+    logger.info('   Atau paste langsung token yang dimulai dengan eyJ...');
+    return false;
+  }
+
+  // Check if edel_session is present
+  const hasEdel = cookies.some((c) => c.name === 'edel_session');
+  if (!hasEdel) {
+    logger.warn('⚠️  Cookie "edel_session" tidak ditemukan!');
+    logger.warn('   Pastikan kamu sudah LOGIN dulu sebelum copy cookie.');
+    logger.warn('   Cookies yang ditemukan:');
+    cookies.forEach((c) => logger.warn(`     - ${c.name}`));
+
+    const proceed = await ask('Lanjutkan tanpa edel_session? [y/N] > ');
+    if (proceed.toLowerCase() !== 'y') {
+      logger.info('Dibatalkan. Login dulu, lalu coba lagi.');
+      return false;
+    }
+  }
+
+  // Save
+  const state = buildState(cookies);
   saveSessionRaw(state);
 
   console.log('');
   logger.info('✅ Session berhasil di-import!');
-  logger.info(`   🍪 ${cookies.length} cookies`);
-  logger.info(`   📦 ${localStorageItems.length} localStorage items`);
+  logger.info(`   🍪 ${cookies.length} cookies saved`);
+  if (hasEdel) {
+    logger.info('   🔑 edel_session ✓ (JWT token found)');
+  }
   console.log('');
   logger.info('Sekarang jalankan:');
   logger.info('   npm run vote    → test vote sekali');
@@ -247,14 +249,8 @@ export async function importFromCookieString() {
 }
 
 // ─────────────────────────────────────────────
-//  IMPORT METHOD: JSON file (scp dari PC)
+//  IMPORT: From JSON file
 // ─────────────────────────────────────────────
-/**
- * Import session from a JSON file.
- * The file can be:
- *   - Playwright storage state exported from "npm run setup"
- *   - Or manually created JSON with cookies + origins
- */
 export function importSessionFromFile(filePath) {
   const absPath = path.resolve(filePath);
 
@@ -283,40 +279,5 @@ export function importSessionFromFile(filePath) {
   } catch (err) {
     logger.error(`❌ Gagal import: ${err.message}`);
     return false;
-  }
-}
-
-// ─────────────────────────────────────────────
-//  MAIN IMPORT MENU
-// ─────────────────────────────────────────────
-export async function importSession() {
-  console.log('');
-  console.log('╔══════════════════════════════════════════════════════════╗');
-  console.log('║         🔐 IMPORT SESSION LOGIN                        ║');
-  console.log('╚══════════════════════════════════════════════════════════╝');
-  console.log('');
-  console.log('Pilih cara import session:');
-  console.log('');
-  console.log('  1. 🍪 Dari Chrome DevTools (copy Cookie header)');
-  console.log('     → Login di Chrome, F12, copy cookie, paste di sini');
-  console.log('');
-  console.log('  2. 📁 Dari file JSON (scp dari PC)');
-  console.log('     → Kalau sudah punya file session.json');
-  console.log('');
-
-  const choice = await ask('Pilih [1/2] > ');
-
-  switch (choice) {
-    case '1':
-      return importFromCookieString();
-
-    case '2': {
-      const filePath = await ask('Path ke file JSON > ');
-      return importSessionFromFile(filePath);
-    }
-
-    default:
-      logger.info('Pilihan tidak valid. Gunakan 1 atau 2.');
-      return false;
   }
 }
