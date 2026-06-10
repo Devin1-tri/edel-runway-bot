@@ -1,8 +1,8 @@
 import { validateConfig } from './utils/config.js';
 import config from './utils/config.js';
 import logger, { logSeparator } from './utils/logger.js';
-import { setupLogin } from './auth/login.js';
 import { hasSession, getSessionAge, clearSession, importSession, importSessionFromFile } from './auth/session.js';
+import { checkSession } from './api/client.js';
 import { startScheduler, runSingleVote } from './scheduler/cron.js';
 
 // Get CLI command
@@ -21,46 +21,43 @@ function printHelp() {
 Usage: node src/index.js <command>
 
 Commands:
-  import    ⭐ Import session dari Chrome DevTools (RECOMMENDED)
-            Login di Chrome PC kamu → F12 → copy Cookie → paste di sini.
-            Tidak perlu jalankan browser di VPS.
+  import    ⭐ Import session dari Chrome DevTools
+            Login di Chrome PC → F12 → Network → copy Cookie → paste.
 
   import-file <path>
             Import session dari file JSON.
-            Contoh: node src/index.js import-file ./session.json
-
-  setup     Login interaktif via Playwright (butuh GUI/Desktop)
-            Buka browser, login passkey manual, session auto-save.
 
   vote      Vote sekali saja (tanpa scheduling)
 
-  start     Mulai bot dengan cron scheduler (default: setiap 1 jam)
-            Bot akan berjalan terus sampai dihentikan (Ctrl+C)
+  start     Mulai bot scheduler (default: setiap 1 jam)
+            Bot berjalan terus sampai dihentikan (Ctrl+C)
 
   status    Cek status session dan konfigurasi
 
-  clear     Hapus session tersimpan (force re-login)
+  clear     Hapus session (force re-import)
 
   help      Tampilkan bantuan ini
 
 NPM Shortcuts:
   npm run import    → import session dari Chrome
-  npm run setup     → login interaktif (butuh GUI)
   npm run vote      → vote sekali
   npm run start     → mulai bot scheduler
 
-Workflow untuk VPS:
-  1. Login di Chrome PC → F12 → copy cookie
+Workflow:
+  1. Login di Chrome PC → F12 → Network → copy Cookie
   2. Di VPS: npm run import → paste cookie
-  3. Di VPS: npm run vote (test dulu)
+  3. Di VPS: npm run vote (test)
   4. Di VPS: npm run start (jalankan bot)
+
+💡 Bot ini TIDAK butuh Chrome/browser di VPS!
+   Semua dilakukan via HTTP request langsung.
 `);
 }
 
 /**
  * Show current bot status
  */
-function showStatus() {
+async function showStatus() {
   logSeparator();
   logger.info('📊 Bot Status');
   logSeparator();
@@ -69,11 +66,16 @@ function showStatus() {
   if (hasSession()) {
     const age = getSessionAge();
     const ageStr = age !== null ? `${age.toFixed(1)} jam` : 'unknown';
-    const fresh = age !== null && age < 48;
-    const icon = fresh ? '✅' : '⚠️';
-    logger.info(`${icon} Session: Tersimpan (umur: ${ageStr})`);
-    if (!fresh) {
-      logger.warn('   Session mungkin sudah expired. Jalankan "npm run import" untuk refresh.');
+
+    // Test if session is actually valid
+    logger.info('🔍 Testing session...');
+    const valid = await checkSession();
+
+    if (valid) {
+      logger.info(`✅ Session: Valid (umur: ${ageStr})`);
+    } else {
+      logger.warn(`⚠️  Session: Expired/Invalid (umur: ${ageStr})`);
+      logger.info('   Jalankan "npm run import" untuk import ulang.');
     }
   } else {
     logger.error('❌ Session: Belum ada');
@@ -85,11 +87,10 @@ function showStatus() {
   logger.info('⚙️  Configuration:');
   logger.info(`   Strategy:    ${config.voteStrategy}`);
   logger.info(`   Schedule:    ${config.cronSchedule}`);
-  logger.info(`   Headless:    ${config.headless}`);
-  logger.info(`   Screenshots: ${config.saveScreenshots}`);
   logger.info(`   Max Retries: ${config.maxRetries}`);
   logger.info(`   Base URL:    ${config.baseUrl}`);
   logger.info(`   Telegram:    ${config.telegramBotToken ? 'Configured ✅' : 'Not set ⚠️'}`);
+  logger.info(`   Mode:        Pure HTTP (no browser)`);
   logSeparator();
 }
 
@@ -117,10 +118,6 @@ async function main() {
         }
         break;
 
-      case 'setup':
-        await setupLogin();
-        break;
-
       case 'vote':
         await runSingleVote();
         break;
@@ -130,12 +127,12 @@ async function main() {
         break;
 
       case 'status':
-        showStatus();
+        await showStatus();
         break;
 
       case 'clear':
         clearSession();
-        logger.info('Session berhasil dihapus. Jalankan "npm run import" untuk import ulang.');
+        logger.info('Session dihapus. Jalankan "npm run import" untuk import ulang.');
         break;
 
       case 'help':

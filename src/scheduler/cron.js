@@ -1,7 +1,6 @@
 import cron from 'node-cron';
 import config from '../utils/config.js';
 import logger, { logSeparator } from '../utils/logger.js';
-import { getAuthenticatedSession } from '../auth/login.js';
 import { performVote } from '../bot/voter.js';
 import {
   notifyVoteSuccess,
@@ -10,6 +9,7 @@ import {
   notifyBotStarted,
   notifyNextVote,
   notifyAlreadyVoted,
+  sendTelegram,
 } from '../utils/telegram.js';
 
 /**
@@ -24,47 +24,35 @@ async function voteCycle() {
   for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
     logger.info(`🔄 Attempt ${attempt}/${config.maxRetries}`);
 
-    // Get authenticated browser session
-    const session = await getAuthenticatedSession();
-    if (!session) {
-      logger.error('❌ Cannot get authenticated session. Bot needs re-setup.');
-      logger.info('   Jalankan: npm run setup');
-      await notifySessionExpired();
-      return;
-    }
-
-    const { browser, context, page } = session;
-
     try {
-      const result = await performVote(page, context);
+      const result = await performVote();
 
       if (result.success) {
         logger.info('🎉 Vote cycle completed successfully!');
 
         // Send Telegram notification
-        if (result.details?.note?.includes('Already voted')) {
+        if (result.details?.note?.includes('Already submitted')) {
+          await notifyAlreadyVoted(result.details.note);
+        } else if (result.details?.note) {
+          // Informational (waiting, no round, etc.)
           await notifyAlreadyVoted(result.details.note);
         } else {
           await notifyVoteSuccess(result.details);
         }
         await notifyNextVote();
-
-        await browser.close();
         return;
       }
 
-      // Check if it's a session error (don't retry, need re-setup)
-      if (result.details?.error?.includes('Session expired')) {
-        logger.error('🔑 Session expired. Need re-setup.');
+      // Check if session expired
+      if (result.details?.sessionExpired) {
+        logger.error('🔑 Session expired. Need re-import.');
         await notifySessionExpired();
-        await browser.close();
         return;
       }
 
       lastError = result.details?.error;
-      logger.warn(`⚠️  Vote attempt ${attempt} failed: ${lastError}`);
+      logger.warn(`⚠️  Attempt ${attempt} failed: ${lastError}`);
 
-      // Notify failure (with retry info)
       await notifyVoteFailed({
         ...result.details,
         attempt,
@@ -82,12 +70,6 @@ async function voteCycle() {
         maxAttempts: config.maxRetries,
         willRetry: attempt < config.maxRetries,
       });
-    } finally {
-      try {
-        await browser.close();
-      } catch {
-        // Browser might already be closed
-      }
     }
 
     // Wait before retry (exponential backoff)
@@ -120,10 +102,9 @@ export async function startScheduler() {
   logger.info('');
   logger.info(`📅 Schedule: ${schedule}`);
   logger.info(`🎯 Strategy: ${config.voteStrategy}`);
-  logger.info(`🖥️  Headless: ${config.headless}`);
   logger.info(`🔄 Max retries: ${config.maxRetries}`);
-  logger.info(`📸 Screenshots: ${config.saveScreenshots}`);
   logger.info(`📨 Telegram: ${config.telegramBotToken ? 'Configured ✅' : 'Not configured ⚠️'}`);
+  logger.info(`🌐 Mode: Pure HTTP (no browser needed)`);
   logger.info('');
 
   // Send Telegram notification that bot started
@@ -152,7 +133,8 @@ export async function startScheduler() {
     logger.info('');
     logger.info('🛑 Bot stopping...');
     job.stop();
-    await sendTelegramShutdown();
+    const time = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+    await sendTelegram(`🛑 *BOT STOPPED*\n\n🕐 Waktu: ${time}`);
     logger.info('👋 Goodbye!');
     process.exit(0);
   };
@@ -161,15 +143,6 @@ export async function startScheduler() {
   process.on('SIGTERM', shutdown);
 
   return job;
-}
-
-/**
- * Send bot shutdown notification
- */
-async function sendTelegramShutdown() {
-  const { sendTelegram } = await import('../utils/telegram.js');
-  const time = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
-  await sendTelegram(`🛑 *BOT STOPPED*\n\n🕐 Waktu: ${time}`);
 }
 
 /**

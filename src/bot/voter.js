@@ -1,445 +1,235 @@
-import fs from 'fs';
-import path from 'path';
+/**
+ * Core voting engine — pure HTTP, no browser needed.
+ *
+ * Flow:
+ *   1. GET /listing-rounds/current → check round status & fixtures
+ *   2. If status is LOCKED → selections are open → pick assets
+ *   3. POST /listing-rounds/{roundId}/picks → submit all picks
+ *   4. If no round → POST /listing-rounds/start → open a new round
+ */
 import config from '../utils/config.js';
 import logger, { logVote, logSeparator } from '../utils/logger.js';
-import { saveSession } from '../auth/session.js';
+import { getCurrentRound, startRound, submitPicks, getAssets } from '../api/client.js';
 
 /**
- * Take a screenshot with timestamp
+ * Smart strategy: pick the asset with more market popularity.
+ * If we have demand index data, use that; otherwise random.
  */
-async function takeScreenshot(page, label = 'vote') {
-  if (!config.saveScreenshots) return null;
+function smartSelect(teamA, teamB, assetMap) {
+  // Both assets available — compare by any signals we have
+  const a = assetMap.get(teamA);
+  const b = assetMap.get(teamB);
 
-  if (!fs.existsSync(config.screenshotDir)) {
-    fs.mkdirSync(config.screenshotDir, { recursive: true });
+  if (a && b) {
+    // Use asset name/ticker for some heuristic
+    // In real usage, this could be enhanced with demand-index data
+    logger.info(`🧠 Smart: "${a.name || a.ticker}" vs "${b.name || b.ticker}"`);
   }
 
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const filename = `${label}_${timestamp}.png`;
-  const filepath = path.join(config.screenshotDir, filename);
-
-  await page.screenshot({ path: filepath, fullPage: true });
-  logger.debug(`📸 Screenshot saved: ${filename}`);
-  return filepath;
+  // Default: randomly pick one (50/50) — fair for head-to-head
+  const pick = Math.random() < 0.5 ? teamA : teamB;
+  const picked = assetMap.get(pick);
+  logger.info(`🧠 Smart pick: ${picked?.ticker || pick}`);
+  return pick;
 }
 
 /**
- * Wait for listing calls page to fully load
+ * Select which team to pick for a fixture based on strategy
  */
-async function waitForPageReady(page) {
-  // Wait for skeleton loaders to disappear (animate-pulse elements)
-  try {
-    await page.waitForFunction(
-      () => {
-        const skeletons = document.querySelectorAll('.animate-pulse');
-        return skeletons.length === 0;
-      },
-      { timeout: 15000 }
-    );
-  } catch {
-    logger.debug('Skeleton loaders may still be present, continuing...');
-  }
-
-  // Additional wait for dynamic content
-  await page.waitForTimeout(2000);
-}
-
-/**
- * Detect available voting options on the listing calls page.
- * Adapts to the DOM structure dynamically.
- *
- * @param {import('playwright').Page} page
- * @returns {Array<{element: import('playwright').ElementHandle, name: string, votes: number|null, index: number}>}
- */
-async function detectVotingOptions(page) {
-  const options = [];
-
-  // Strategy 1: Look for cards/buttons that appear to be selectable voting options
-  // The GameView component renders head-to-head asset comparisons
-  const selectors = [
-    // Common patterns for voting cards in DeFi/crypto UIs
-    '[data-testid*="vote"]',
-    '[data-testid*="call"]',
-    '[data-testid*="asset"]',
-    '[data-testid*="option"]',
-    'button[class*="call"]',
-    'button[class*="vote"]',
-    'button[class*="asset"]',
-    '[role="button"][class*="card"]',
-    // Look for clickable cards in the game view area
-    'main button:not([disabled])',
-    'main [role="button"]:not([disabled])',
-  ];
-
-  for (const selector of selectors) {
-    try {
-      const elements = await page.$$(selector);
-      if (elements.length >= 2) {
-        logger.debug(`Found ${elements.length} voting elements with selector: ${selector}`);
-
-        for (let i = 0; i < elements.length; i++) {
-          const el = elements[i];
-          const text = await el.innerText().catch(() => '');
-          const name = text.split('\n')[0]?.trim() || `Option ${i + 1}`;
-
-          // Try to extract vote count from text
-          const voteMatch = text.match(/(\d+[\d,]*)\s*(votes?|%)/i);
-          const votes = voteMatch ? parseInt(voteMatch[1].replace(/,/g, ''), 10) : null;
-
-          options.push({ element: el, name, votes, index: i });
-        }
-        break; // Found options, stop searching
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  // Strategy 2: If no specific elements found, look for the general grid layout
-  // The listing-calls page uses "grid gap-5 md:grid-cols-3" for cards
-  if (options.length < 2) {
-    try {
-      // Look for interactive elements within card-like containers
-      const cards = await page.$$('main .grid > div, main .grid > button, main .grid > a');
-      const clickableCards = [];
-
-      for (const card of cards) {
-        const isVisible = await card.isVisible().catch(() => false);
-        const box = await card.boundingBox().catch(() => null);
-        if (isVisible && box && box.height > 50) {
-          // Check if card has a clickable nature
-          const tag = await card.evaluate((el) => el.tagName.toLowerCase());
-          const hasOnClick = await card.evaluate(
-            (el) => el.onclick !== null || el.getAttribute('role') === 'button' || el.style.cursor === 'pointer'
-          );
-          const innerButtons = await card.$$('button');
-
-          if (tag === 'button' || tag === 'a' || hasOnClick || innerButtons.length > 0) {
-            const text = await card.innerText().catch(() => '');
-            const name = text.split('\n')[0]?.trim() || `Card ${clickableCards.length + 1}`;
-            const voteMatch = text.match(/(\d+[\d,]*)\s*(votes?|%)/i);
-            const votes = voteMatch ? parseInt(voteMatch[1].replace(/,/g, ''), 10) : null;
-
-            // If card itself isn't a button, use inner button
-            const clickTarget = innerButtons.length > 0 ? innerButtons[0] : card;
-            clickableCards.push({ element: clickTarget, name, votes, index: clickableCards.length });
-          }
-        }
-      }
-
-      if (clickableCards.length >= 2) {
-        options.push(...clickableCards);
-        logger.debug(`Found ${clickableCards.length} voting cards via grid scan`);
-      }
-    } catch (err) {
-      logger.debug(`Grid scan failed: ${err.message}`);
-    }
-  }
-
-  // Strategy 3: Ultimate fallback - find all prominent buttons on the page
-  if (options.length < 2) {
-    try {
-      const allButtons = await page.$$('main button:not([disabled])');
-      const voteButtons = [];
-
-      for (const btn of allButtons) {
-        const text = await btn.innerText().catch(() => '');
-        const isVisible = await btn.isVisible().catch(() => false);
-        const box = await btn.boundingBox().catch(() => null);
-
-        // Filter for substantial buttons (not small utility buttons)
-        if (isVisible && box && box.height > 35 && box.width > 80 && text.length > 0) {
-          // Exclude navigation/utility buttons
-          const lowerText = text.toLowerCase();
-          if (
-            !lowerText.includes('menu') &&
-            !lowerText.includes('settings') &&
-            !lowerText.includes('profile') &&
-            !lowerText.includes('logout') &&
-            !lowerText.includes('close') &&
-            !lowerText.includes('cancel')
-          ) {
-            voteButtons.push({
-              element: btn,
-              name: text.split('\n')[0]?.trim() || `Button ${voteButtons.length + 1}`,
-              votes: null,
-              index: voteButtons.length,
-            });
-          }
-        }
-      }
-
-      if (voteButtons.length >= 2) {
-        options.push(...voteButtons.slice(0, 6)); // Max 6 options
-        logger.debug(`Found ${voteButtons.length} potential vote buttons via fallback scan`);
-      }
-    } catch (err) {
-      logger.debug(`Button fallback scan failed: ${err.message}`);
-    }
-  }
-
-  return options;
-}
-
-/**
- * Smart voting strategy: analyze available data to pick the best option
- */
-function smartSelect(options) {
-  // If we have vote count data, pick the one with MORE votes (momentum/popular choice)
-  const withVotes = options.filter((o) => o.votes !== null);
-
-  if (withVotes.length >= 2) {
-    // Sort by votes descending - pick the most popular (momentum strategy)
-    const sorted = [...withVotes].sort((a, b) => b.votes - a.votes);
-    logger.info(`🧠 Smart: Memilih "${sorted[0].name}" (${sorted[0].votes} votes) - momentum strategy`);
-    return sorted[0];
-  }
-
-  // Fallback: no vote data available, pick randomly
-  logger.info('🧠 Smart: Tidak ada data votes, menggunakan random');
-  return options[Math.floor(Math.random() * options.length)];
-}
-
-/**
- * Select voting option based on configured strategy
- */
-function selectOption(options, strategy) {
-  if (options.length === 0) return null;
-
+function selectTeam(teamAId, teamBId, assetMap, strategy) {
   switch (strategy) {
     case 'first':
-      logger.info(`📌 Strategy "first": Memilih "${options[0].name}"`);
-      return options[0];
+      return teamAId;
 
     case 'second':
-      if (options.length < 2) return options[0];
-      logger.info(`📌 Strategy "second": Memilih "${options[1].name}"`);
-      return options[1];
+      return teamBId;
 
     case 'smart':
-      return smartSelect(options);
+      return smartSelect(teamAId, teamBId, assetMap);
 
     case 'random':
-    default: {
-      const idx = Math.floor(Math.random() * options.length);
-      logger.info(`🎲 Strategy "random": Memilih "${options[idx].name}" (index: ${idx})`);
-      return options[idx];
-    }
+    default:
+      return Math.random() < 0.5 ? teamAId : teamBId;
   }
 }
 
 /**
- * Look for and click a submit/confirm button after selecting an option
+ * Format listing call status for display
  */
-async function submitVote(page) {
-  // Common submit button patterns
-  const submitSelectors = [
-    'button[type="submit"]',
-    'button:has-text("Submit")',
-    'button:has-text("Confirm")',
-    'button:has-text("Vote")',
-    'button:has-text("Cast")',
-    'button:has-text("send")',
-    'button:has-text("submit")',
-    'button:has-text("confirm")',
-    'button:has-text("vote")',
-    '[data-testid*="submit"]',
-    '[data-testid*="confirm"]',
-  ];
-
-  for (const selector of submitSelectors) {
-    try {
-      const btn = await page.$(selector);
-      if (btn) {
-        const isVisible = await btn.isVisible().catch(() => false);
-        const isEnabled = await btn.isEnabled().catch(() => false);
-        if (isVisible && isEnabled) {
-          const text = await btn.innerText().catch(() => 'Submit');
-          logger.info(`📤 Clicking submit button: "${text.trim()}"`);
-          await btn.click();
-          await page.waitForTimeout(2000);
-          return true;
-        }
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  logger.debug('No separate submit button found (vote may have been submitted on click)');
-  return false;
+function formatStatus(status) {
+  const map = {
+    CREATED: 'Created',
+    LOCK_PENDING: 'Allocation Pending',
+    LOCKED: 'Calls Open',
+    SUBMITTED: 'Selections Submitted',
+    SETTLEMENT_PENDING: 'Demand Index Pending',
+    SETTLED: 'Demand Index Final',
+    EXPIRED: 'Window Closed',
+    FAILED: 'Review Required',
+  };
+  return map[status] || status;
 }
 
 /**
- * Check if voting has already been done (already voted state)
- */
-async function checkAlreadyVoted(page) {
-  const indicators = [
-    // Common "already voted" indicators
-    'text=/already voted/i',
-    'text=/vote submitted/i',
-    'text=/you voted/i',
-    'text=/voted/i',
-    'text=/your pick/i',
-    'text=/selected/i',
-    'text=/come back/i',
-    'text=/next round/i',
-  ];
-
-  for (const selector of indicators) {
-    try {
-      const el = await page.$(selector);
-      if (el) {
-        const isVisible = await el.isVisible().catch(() => false);
-        if (isVisible) {
-          const text = await el.innerText().catch(() => '');
-          return { alreadyVoted: true, message: text.trim() };
-        }
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  return { alreadyVoted: false, message: null };
-}
-
-/**
- * Handle any confirmation dialogs/modals that appear after voting
- */
-async function handleConfirmationModal(page) {
-  await page.waitForTimeout(1000);
-
-  // Look for modal confirm buttons
-  const modalConfirmSelectors = [
-    '.modal button:has-text("Confirm")',
-    '.modal button:has-text("Yes")',
-    '.modal button:has-text("OK")',
-    '[role="dialog"] button:has-text("Confirm")',
-    '[role="dialog"] button:has-text("Yes")',
-    '[role="alertdialog"] button:has-text("OK")',
-    'dialog button:has-text("Confirm")',
-  ];
-
-  for (const selector of modalConfirmSelectors) {
-    try {
-      const btn = await page.$(selector);
-      if (btn) {
-        const isVisible = await btn.isVisible().catch(() => false);
-        if (isVisible) {
-          logger.info('📋 Confirmation modal detected, confirming...');
-          await btn.click();
-          await page.waitForTimeout(2000);
-          return true;
-        }
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  return false;
-}
-
-/**
- * Main voting function — the core of the bot
+ * Main voting function — pure HTTP, no browser
  *
- * @param {import('playwright').Page} page
- * @param {import('playwright').BrowserContext} context
  * @returns {{ success: boolean, details: object }}
  */
-export async function performVote(page, context) {
+export async function performVote() {
   const strategy = config.voteStrategy;
   logSeparator();
-  logger.info(`🗳️  Starting vote attempt | Strategy: ${strategy}`);
-  logger.info(`📍 Navigating to ${config.listingCallsUrl}`);
+  logger.info(`🗳️  Starting vote | Strategy: ${strategy}`);
 
   try {
-    // Navigate to listing calls page
-    await page.goto(config.listingCallsUrl, { waitUntil: 'networkidle' });
+    // Step 1: Get current round
+    logger.info('📡 Fetching current round...');
+    let roundData = await getCurrentRound();
 
-    // Check for login redirect
-    if (page.url().includes('/login') || page.url().includes('/register')) {
-      return {
-        success: false,
-        details: { error: 'Session expired - redirected to login', strategy },
-      };
-    }
+    const roundStatus = roundData?.round?.round?.status;
+    const actions = roundData?.actions;
 
-    // Wait for page to fully load
-    await waitForPageReady(page);
-    await takeScreenshot(page, 'before-vote');
+    logger.info(`📊 Round status: ${formatStatus(roundStatus) || 'No active round'}`);
 
-    // Check if already voted
-    const { alreadyVoted, message } = await checkAlreadyVoted(page);
-    if (alreadyVoted) {
-      logger.info(`ℹ️  Already voted: "${message}"`);
-      await takeScreenshot(page, 'already-voted');
+    // Step 2: Check if we already submitted
+    if (['SUBMITTED', 'SETTLEMENT_PENDING', 'SETTLED'].includes(roundStatus)) {
+      logger.info('ℹ️  Already submitted for this round.');
       return {
         success: true,
-        details: { asset: 'N/A', strategy, round: 'N/A', note: `Already voted: ${message}` },
+        details: {
+          asset: 'N/A',
+          strategy,
+          round: roundData.round.round.id,
+          note: `Already submitted (status: ${formatStatus(roundStatus)})`,
+        },
       };
     }
 
-    // Detect voting options
-    logger.info('🔍 Scanning for voting options...');
-    const options = await detectVotingOptions(page);
+    // Step 3: If expired/failed or no round, try to start a new one
+    if (!roundData?.round || ['EXPIRED', 'FAILED'].includes(roundStatus)) {
+      if (actions?.startRound?.enabled) {
+        logger.info('🚀 Starting new listing round...');
+        roundData = await startRound();
+        logger.info(`✅ New round started: ${roundData?.round?.round?.status}`);
+      } else {
+        const reason = actions?.startRound?.reason || 'Unknown';
+        logger.info(`⏳ Cannot start round: ${reason}`);
+        return {
+          success: true,
+          details: {
+            asset: 'N/A',
+            strategy,
+            round: 'N/A',
+            note: `No round available: ${reason}`,
+          },
+        };
+      }
+    }
 
-    if (options.length === 0) {
-      logger.warn('⚠️  No voting options found on the page.');
-      await takeScreenshot(page, 'no-options');
+    // Step 4: If CREATED or LOCK_PENDING, selections aren't open yet
+    if (['CREATED', 'LOCK_PENDING'].includes(roundData?.round?.round?.status)) {
+      logger.info('⏳ Round is preparing (allocation pending). Selections not open yet.');
+      return {
+        success: true,
+        details: {
+          asset: 'N/A',
+          strategy,
+          round: roundData.round.round.id,
+          note: `Waiting for calls to open (status: ${formatStatus(roundData.round.round.status)})`,
+        },
+      };
+    }
+
+    // Step 5: LOCKED = selections are open!
+    if (roundData?.round?.round?.status !== 'LOCKED') {
+      logger.warn(`⚠️  Unexpected status: ${roundData?.round?.round?.status}`);
       return {
         success: false,
-        details: { error: 'No voting options found', strategy },
+        details: {
+          error: `Unexpected round status: ${roundData?.round?.round?.status}`,
+          strategy,
+        },
       };
     }
 
-    logger.info(`📊 Found ${options.length} voting options:`);
-    options.forEach((opt, i) => {
-      const votesStr = opt.votes !== null ? ` (${opt.votes} votes)` : '';
-      logger.info(`   ${i + 1}. ${opt.name}${votesStr}`);
-    });
+    const round = roundData.round;
+    const fixtures = round.fixtures || [];
+    const roundId = round.round.id;
 
-    // Select option based on strategy
-    const selected = selectOption(options, strategy);
-    if (!selected) {
-      return {
-        success: false,
-        details: { error: 'Strategy returned no selection', strategy },
-      };
+    logger.info(`✅ Calls are OPEN! ${fixtures.length} head-to-head fixtures`);
+
+    // Step 6: Load assets for smart selection
+    let assetMap = new Map();
+    try {
+      const assets = await getAssets();
+      assetMap = new Map(assets.map((a) => [a.id, a]));
+      logger.debug(`📦 Loaded ${assetMap.size} assets`);
+    } catch (err) {
+      logger.debug(`Could not load assets: ${err.message}`);
     }
 
-    // Click the selected option
-    logger.info(`👆 Clicking: "${selected.name}"`);
-    await selected.element.click();
-    await page.waitForTimeout(1500);
+    // Step 7: Make selections for each fixture
+    const picks = [];
+    for (let i = 0; i < fixtures.length; i++) {
+      const fixture = fixtures[i];
+      const teamAId = fixture.teamAId;
+      const teamBId = fixture.teamBId;
 
-    // Handle confirmation modal if any
-    await handleConfirmationModal(page);
+      // If already selected, keep it
+      if (fixture.selectedTeamId) {
+        logger.info(`   ${i + 1}. Already picked: ${assetMap.get(fixture.selectedTeamId)?.ticker || fixture.selectedTeamId}`);
+        picks.push({
+          roundDecisionId: fixture.id,
+          assetId: fixture.selectedTeamId,
+        });
+        continue;
+      }
 
-    // Try to submit vote (some UIs require a separate submit button)
-    await submitVote(page);
+      // Make a new selection
+      const selectedId = selectTeam(teamAId, teamBId, assetMap, strategy);
+      const teamA = assetMap.get(teamAId);
+      const teamB = assetMap.get(teamBId);
+      const selected = assetMap.get(selectedId);
 
-    // Wait for response
-    await page.waitForTimeout(3000);
-    await takeScreenshot(page, 'after-vote');
+      logger.info(
+        `   ${i + 1}. ${teamA?.ticker || 'A'} vs ${teamB?.ticker || 'B'} → Picked: ${selected?.ticker || selectedId}`
+      );
 
-    // Refresh session after successful action
-    await saveSession(context);
+      picks.push({
+        roundDecisionId: fixture.id,
+        assetId: selectedId,
+      });
+    }
+
+    // Step 8: Submit all picks
+    logger.info(`📤 Submitting ${picks.length} picks for round ${roundId}...`);
+    const result = await submitPicks(roundId, picks);
+
+    const newStatus = result?.round?.round?.status;
+    logger.info(`✅ Picks submitted! New status: ${formatStatus(newStatus)}`);
+
+    const pickedAssets = picks
+      .map((p) => assetMap.get(p.assetId)?.ticker || 'unknown')
+      .join(', ');
 
     const details = {
-      asset: selected.name,
+      asset: pickedAssets,
       strategy,
-      round: new Date().toISOString().split('T')[0],
+      round: roundId,
+      fixtureCount: fixtures.length,
     };
 
     logVote(true, details);
     return { success: true, details };
   } catch (err) {
-    logger.error(`Vote attempt failed: ${err.message}`);
-    await takeScreenshot(page, 'error');
+    const isSessionError = err.message.includes('SESSION_EXPIRED');
+    logger.error(`${isSessionError ? '🔑' : '❌'} Vote failed: ${err.message}`);
 
-    const details = { error: err.message, strategy };
+    const details = {
+      error: err.message,
+      strategy,
+      sessionExpired: isSessionError,
+    };
+
     logVote(false, details);
     return { success: false, details };
   }

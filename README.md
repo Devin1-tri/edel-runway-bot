@@ -2,34 +2,24 @@
 
 Bot otomatis untuk daily vote pada **Listing Calls** di [Edel Finance Runway Desk](https://runway.edel.finance/listing-calls).
 
+**⚡ Pure HTTP** — tidak butuh Chrome/browser di VPS. Ringan dan cepat.
+
 ## ✨ Features
 
 - **Auto Vote** setiap 1 jam (configurable via cron)
-- **Smart Voting** - analisa data vote untuk pilih asset terbaik (momentum strategy)
-- **Telegram Notifications** - notif ke bot Telegram setiap vote berhasil/gagal
-- **Session Persistence** - login manual 1x, session disimpan untuk reuse
-- **Retry Logic** - exponential backoff jika gagal
-- **Screenshot** - bukti setiap vote tersimpan
-- **VPS Ready** - jalan headless + PM2 support
+- **Pure HTTP** — no Chrome, no Playwright, no browser di VPS
+- **Telegram Notifications** — notif realtime setiap vote
+- **Smart Voting** — random selection strategy untuk head-to-head calls
+- **Session Import** — login di Chrome PC, copy cookie, paste di VPS
+- **Retry Logic** — exponential backoff jika gagal
+- **VPS Ready** — PM2 support, auto-restart
 
-> ⚠️ **SECURITY**: JANGAN pernah commit file `.env` atau folder `sessions/` ke repo ini!
-> File tersebut berisi token & session login kamu.
+> ⚠️ **SECURITY**: JANGAN commit file `.env` atau folder `sessions/`!
 
 ## 📋 Prerequisites
 
 - **Node.js v18+** → [Download](https://nodejs.org/)
 - **Akun Runway Desk** → [Register](https://runway.edel.finance/register)
-- **Passkey** sudah di-setup (Windows Hello / fingerprint / security key)
-
-### VPS (Linux Ubuntu/Debian)
-```bash
-# Install Node.js 20 LTS
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-
-# Install PM2 globally
-npm install -g pm2
-```
 
 ## 🚀 Quick Start
 
@@ -39,22 +29,15 @@ npm install -g pm2
 git clone https://github.com/AaBatok/Edel.git
 cd Edel
 npm install
-npx playwright install chromium
-npx playwright install-deps chromium   # Linux only - install system deps
 ```
+
+> 💡 Hanya 4 dependencies ringan — tidak perlu install Chrome/Playwright!
 
 ### 2. Configure
 
 ```bash
 cp .env.example .env
-nano .env    # Edit konfigurasi
-```
-
-**Isi yang WAJIB diisi di `.env`:**
-```env
-# Telegram Bot (opsional tapi direkomendasikan)
-TELEGRAM_BOT_TOKEN=123456:ABC-xyz...
-TELEGRAM_CHAT_ID=987654321
+nano .env
 ```
 
 ### 3. Setup Telegram Bot (Opsional tapi Direkomendasikan)
@@ -66,47 +49,55 @@ TELEGRAM_CHAT_ID=987654321
 5. Cari `"chat":{"id": 123456789}` → itu **Chat ID** kamu
 6. Masukkan keduanya ke `.env`
 
-### 4. Import Session dari Chrome (⭐ Recommended)
-
-Login di Chrome PC kamu, lalu copy cookie ke VPS:
+### 4. Import Session dari Chrome
 
 ```bash
 npm run import
 ```
 
-Bot akan guide kamu step-by-step. Singkatnya:
+Cara ambil cookie:
 
 1. **Login** di Chrome PC → buka https://runway.edel.finance
 2. Tekan **F12** (DevTools) → klik tab **Network**
 3. **Refresh** halaman (Ctrl+R)
-4. **Klik** request pertama (misal "listing-calls")
+4. **Klik** request pertama di daftar
 5. Di panel kanan, cari **"Cookie:"** di Request Headers
-6. **Klik kanan** → Copy value
-7. Di VPS, jalankan `npm run import` → **paste** cookie-nya
+6. **Klik kanan** value-nya → **Copy value**
+7. Di VPS/terminal: `npm run import` → **paste** → Enter
 
-> 💡 **Alternatif**: Kalau kamu punya GUI di VPS, bisa juga pakai `npm run setup`
-> yang akan membuka browser langsung untuk login via passkey.
+Bot otomatis detect cookie `edel_session` (JWT token yang penting).
+
+### 5. Test & Run
+
+```bash
+# Test vote sekali
+npm run vote
+
+# Mulai bot scheduler (tiap 1 jam)
+npm run start
+
+# Cek status session
+npm run status
+```
 
 ## 🖥️ VPS Deployment (PM2)
 
-### Full VPS Setup (copy-paste)
+### Full Setup (copy-paste)
 
 ```bash
 # 1. Clone & install
 git clone https://github.com/AaBatok/Edel.git
 cd Edel
 npm install
-npx playwright install chromium
-npx playwright install-deps chromium
 
 # 2. Config
 cp .env.example .env
 nano .env   # isi TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID
 
-# 3. Import session dari Chrome PC kamu
+# 3. Import session dari Chrome PC
 npm run import
 
-# 4. Test vote dulu
+# 4. Test
 npm run vote
 
 # 5. Start bot dengan PM2
@@ -115,44 +106,25 @@ pm2 save
 pm2 startup
 ```
 
-### Start dengan PM2
-
-```bash
-# Start bot
-pm2 start ecosystem.config.cjs
-
-# Monitor logs realtime
-pm2 logs edel-vote-bot
-
-# Status
-pm2 status
-
-# Auto-start saat VPS reboot
-pm2 startup
-pm2 save
-```
-
 ### PM2 Commands
 
 ```bash
-pm2 restart edel-vote-bot    # Restart bot
-pm2 stop edel-vote-bot       # Stop bot
-pm2 delete edel-vote-bot     # Remove dari PM2
-pm2 logs edel-vote-bot --lines 50  # Lihat 50 log terakhir
+pm2 logs edel-vote-bot         # Lihat logs
+pm2 restart edel-vote-bot      # Restart
+pm2 stop edel-vote-bot         # Stop
+pm2 status                     # Status semua
 ```
 
 ## 📨 Telegram Notifications
-
-Bot akan otomatis kirim notifikasi ke Telegram kamu:
 
 | Event | Pesan |
 |---|---|
 | ✅ Vote berhasil | Asset yang dipilih, strategy, waktu |
 | ❌ Vote gagal | Error detail, retry info |
 | ℹ️ Sudah voted | Status, jadwal berikutnya |
-| 🔑 Session expired | Instruksi re-login |
+| 🔑 Session expired | Instruksi re-import |
 | 🤖 Bot started | Config summary |
-| ⏰ Next vote | Estimasi waktu vote berikutnya |
+| ⏰ Next vote | Estimasi waktu berikutnya |
 | 🛑 Bot stopped | Waktu shutdown |
 
 ## ⚙️ Configuration (.env)
@@ -161,83 +133,53 @@ Bot akan otomatis kirim notifikasi ke Telegram kamu:
 |---|---|---|
 | `VOTE_STRATEGY` | `smart` | `random` / `smart` / `first` / `second` |
 | `CRON_SCHEDULE` | `0 */1 * * *` | Cron expression (default: tiap jam) |
-| `HEADLESS` | `true` | `true` untuk VPS, `false` untuk debug |
-| `SLOW_MO` | `500` | Delay antar aksi (ms), makin tinggi makin mirip manusia |
-| `PAGE_TIMEOUT` | `30000` | Timeout tunggu halaman (ms) |
 | `MAX_RETRIES` | `3` | Jumlah retry jika gagal |
-| `SAVE_SCREENSHOTS` | `true` | Simpan screenshot tiap vote |
+| `SAVE_SCREENSHOTS` | `true` | Log vote evidence |
 | `TELEGRAM_BOT_TOKEN` | _(kosong)_ | Token dari @BotFather |
 | `TELEGRAM_CHAT_ID` | _(kosong)_ | Chat ID Telegram kamu |
-
-## 🎯 Voting Strategies
-
-| Strategy | Deskripsi |
-|---|---|
-| `random` | Pilih acak dari pilihan yang tersedia |
-| `smart` | Analisa vote counts, pilih yang paling populer (momentum) |
-| `first` | Selalu pilih opsi pertama (kiri) |
-| `second` | Selalu pilih opsi kedua (kanan) |
 
 ## 📁 Folder Structure
 
 ```
 Edel/
-├── package.json           # Dependencies & scripts
-├── .env                   # Config kamu (JANGAN COMMIT!)
+├── package.json           # 4 deps saja, ringan!
+├── .env                   # Config (JANGAN COMMIT!)
 ├── .env.example           # Config template
-├── ecosystem.config.cjs   # PM2 deployment config
+├── ecosystem.config.cjs   # PM2 config
 ├── src/
 │   ├── index.js           # CLI entry point
+│   ├── api/
+│   │   └── client.js      # ⚡ Pure HTTP API client
 │   ├── auth/
-│   │   ├── login.js       # Passkey login + browser launch
-│   │   └── session.js     # Session save/load/validate
+│   │   └── session.js     # Cookie import/export
 │   ├── bot/
-│   │   └── voter.js       # Core voting logic + smart strategy
+│   │   └── voter.js       # Voting logic
 │   ├── scheduler/
-│   │   └── cron.js        # Cron scheduling + retry + Telegram
+│   │   └── cron.js        # Cron scheduler + Telegram
 │   └── utils/
 │       ├── config.js      # Config loader
 │       ├── logger.js      # Winston logger
-│       └── telegram.js    # Telegram Bot API notifications
-├── sessions/              # Saved login sessions (JANGAN COMMIT!)
-├── screenshots/           # Vote evidence screenshots
+│       └── telegram.js    # Telegram notifications
+├── sessions/              # Cookie session (JANGAN COMMIT!)
 └── logs/                  # Log files
 ```
 
 ## ⚠️ Troubleshooting
 
-### "Session expired"
-→ Jalankan `npm run setup` ulang untuk login lagi.
-→ Bot akan kirim notif Telegram otomatis kalau session expired.
+### "SESSION_EXPIRED"
+→ Cookie `edel_session` sudah expired.
+→ Login ulang di Chrome → F12 → copy cookie → `npm run import`
 
-### "No voting options found"
-→ Mungkin belum ada active listing call, atau UI berubah.
-→ Cek screenshot di folder `screenshots/` untuk debug.
-→ Jalankan dengan `HEADLESS=false` untuk lihat browser.
-
-### Browser crash di VPS
-```bash
-# Install Playwright system deps
-npx playwright install-deps chromium
-
-# Atau install secara manual
-sudo apt-get install -y libnss3 libnspr4 libatk-bridge2.0-0 libdrm2 \
-  libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
-  libasound2 libpango-1.0-0 libcairo2 libatspi2.0-0
-```
-
-### Session transfer ke VPS
-1. Login di PC lokal: `npm run setup` (butuh GUI)
-2. Copy session: `scp -r ./sessions/ user@vps:/path/to/Edel/sessions/`
-3. Di VPS: `pm2 start ecosystem.config.cjs`
+### "No round available"
+→ Belum ada listing call window yang terbuka.
+→ Bot akan otomatis coba lagi di jadwal berikutnya.
 
 ### Telegram tidak kirim notif
-1. Pastikan `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID` sudah diisi di `.env`
-2. Pastikan kamu sudah kirim pesan ke bot (bot tidak bisa kirim pesan duluan)
-3. Test manual: buka `https://api.telegram.org/bot<TOKEN>/getUpdates`
+1. Pastikan `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID` diisi di `.env`
+2. Kirim pesan ke bot dulu (bot tidak bisa kirim pesan duluan)
+3. Test: `https://api.telegram.org/bot<TOKEN>/getUpdates`
 
 ## 📜 Disclaimer
 
 > Bot ini dibuat untuk keperluan edukasi. Penggunaan automasi mungkin melanggar
 > Terms & Conditions dari Edel Finance. Gunakan dengan risiko sendiri.
-> Developer tidak bertanggung jawab atas konsekuensi penggunaan bot ini.
