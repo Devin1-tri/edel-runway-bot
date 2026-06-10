@@ -2,11 +2,12 @@ import { validateConfig } from './utils/config.js';
 import config from './utils/config.js';
 import logger, { logSeparator } from './utils/logger.js';
 import { setupLogin } from './auth/login.js';
-import { hasSession, getSessionAge, clearSession } from './auth/session.js';
+import { hasSession, getSessionAge, clearSession, importSession, importSessionFromFile } from './auth/session.js';
 import { startScheduler, runSingleVote } from './scheduler/cron.js';
 
 // Get CLI command
 const command = process.argv[2] || 'help';
+const extraArg = process.argv[3] || null;
 
 /**
  * Print usage help
@@ -20,12 +21,20 @@ function printHelp() {
 Usage: node src/index.js <command>
 
 Commands:
-  setup     Login interaktif (buka browser, login passkey manual)
-            Simpan session untuk digunakan bot.
+  import    ⭐ Import session dari Chrome DevTools (RECOMMENDED)
+            Login di Chrome PC kamu → F12 → copy Cookie → paste di sini.
+            Tidak perlu jalankan browser di VPS.
+
+  import-file <path>
+            Import session dari file JSON.
+            Contoh: node src/index.js import-file ./session.json
+
+  setup     Login interaktif via Playwright (butuh GUI/Desktop)
+            Buka browser, login passkey manual, session auto-save.
 
   vote      Vote sekali saja (tanpa scheduling)
 
-  start     Mulai bot dengan cron scheduler (setiap 1 jam)
+  start     Mulai bot dengan cron scheduler (default: setiap 1 jam)
             Bot akan berjalan terus sampai dihentikan (Ctrl+C)
 
   status    Cek status session dan konfigurasi
@@ -35,12 +44,16 @@ Commands:
   help      Tampilkan bantuan ini
 
 NPM Shortcuts:
-  npm run setup     → node src/index.js setup
-  npm run vote      → node src/index.js vote
-  npm run start     → node src/index.js start
+  npm run import    → import session dari Chrome
+  npm run setup     → login interaktif (butuh GUI)
+  npm run vote      → vote sekali
+  npm run start     → mulai bot scheduler
 
-Environment:
-  Copy .env.example ke .env dan sesuaikan konfigurasi.
+Workflow untuk VPS:
+  1. Login di Chrome PC → F12 → copy cookie
+  2. Di VPS: npm run import → paste cookie
+  3. Di VPS: npm run vote (test dulu)
+  4. Di VPS: npm run start (jalankan bot)
 `);
 }
 
@@ -60,11 +73,11 @@ function showStatus() {
     const icon = fresh ? '✅' : '⚠️';
     logger.info(`${icon} Session: Tersimpan (umur: ${ageStr})`);
     if (!fresh) {
-      logger.warn('   Session mungkin sudah expired. Jalankan "npm run setup" untuk refresh.');
+      logger.warn('   Session mungkin sudah expired. Jalankan "npm run import" untuk refresh.');
     }
   } else {
     logger.error('❌ Session: Belum ada');
-    logger.info('   Jalankan "npm run setup" untuk login.');
+    logger.info('   Jalankan "npm run import" untuk import dari Chrome.');
   }
 
   // Config
@@ -76,6 +89,7 @@ function showStatus() {
   logger.info(`   Screenshots: ${config.saveScreenshots}`);
   logger.info(`   Max Retries: ${config.maxRetries}`);
   logger.info(`   Base URL:    ${config.baseUrl}`);
+  logger.info(`   Telegram:    ${config.telegramBotToken ? 'Configured ✅' : 'Not set ⚠️'}`);
   logSeparator();
 }
 
@@ -90,6 +104,19 @@ async function main() {
     }
 
     switch (command) {
+      case 'import':
+        await importSession();
+        break;
+
+      case 'import-file':
+        if (!extraArg) {
+          logger.error('❌ Perlu path ke file JSON.');
+          logger.info('   Contoh: node src/index.js import-file ./session.json');
+        } else {
+          importSessionFromFile(extraArg);
+        }
+        break;
+
       case 'setup':
         await setupLogin();
         break;
@@ -99,7 +126,7 @@ async function main() {
         break;
 
       case 'start':
-        startScheduler();
+        await startScheduler();
         break;
 
       case 'status':
@@ -108,7 +135,7 @@ async function main() {
 
       case 'clear':
         clearSession();
-        logger.info('Session berhasil dihapus. Jalankan "npm run setup" untuk login ulang.');
+        logger.info('Session berhasil dihapus. Jalankan "npm run import" untuk import ulang.');
         break;
 
       case 'help':

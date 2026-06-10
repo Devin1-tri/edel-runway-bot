@@ -5,6 +5,7 @@
   "main": "src/index.js",
   "type": "module",
   "scripts": {
+    "import": "node src/index.js import",
     "setup": "node src/index.js setup",
     "vote": "node src/index.js vote",
     "start": "node src/index.js start",

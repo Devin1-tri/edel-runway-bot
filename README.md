@@ -66,38 +66,53 @@ TELEGRAM_CHAT_ID=987654321
 5. Cari `"chat":{"id": 123456789}` → itu **Chat ID** kamu
 6. Masukkan keduanya ke `.env`
 
-### 4. Login Setup (1x saja)
+### 4. Import Session dari Chrome (⭐ Recommended)
+
+Login di Chrome PC kamu, lalu copy cookie ke VPS:
 
 ```bash
-npm run setup
+npm run import
 ```
 
-> ⚠️ **PENTING**: Ini akan membuka browser (butuh GUI/Desktop).
-> Login dengan passkey kamu (fingerprint/PIN/security key).
-> Session tersimpan otomatis. Hanya perlu 1x (atau saat session expired).
->
-> **Untuk VPS tanpa GUI**: Jalankan setup di PC lokal dulu,
-> lalu copy folder `sessions/` ke VPS.
+Bot akan guide kamu step-by-step. Singkatnya:
 
-### 5. Test Vote
+1. **Login** di Chrome PC → buka https://runway.edel.finance
+2. Tekan **F12** (DevTools) → klik tab **Network**
+3. **Refresh** halaman (Ctrl+R)
+4. **Klik** request pertama (misal "listing-calls")
+5. Di panel kanan, cari **"Cookie:"** di Request Headers
+6. **Klik kanan** → Copy value
+7. Di VPS, jalankan `npm run import` → **paste** cookie-nya
 
-```bash
-npm run vote
-```
-
-### 6. Start Bot (Auto tiap 1 jam)
-
-```bash
-npm run start
-```
+> 💡 **Alternatif**: Kalau kamu punya GUI di VPS, bisa juga pakai `npm run setup`
+> yang akan membuka browser langsung untuk login via passkey.
 
 ## 🖥️ VPS Deployment (PM2)
 
-### Cara Transfer Session dari PC ke VPS
+### Full VPS Setup (copy-paste)
 
 ```bash
-# Di PC lokal, setelah npm run setup berhasil:
-scp -r ./sessions/ user@your-vps:/path/to/Edel/sessions/
+# 1. Clone & install
+git clone https://github.com/AaBatok/Edel.git
+cd Edel
+npm install
+npx playwright install chromium
+npx playwright install-deps chromium
+
+# 2. Config
+cp .env.example .env
+nano .env   # isi TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID
+
+# 3. Import session dari Chrome PC kamu
+npm run import
+
+# 4. Test vote dulu
+npm run vote
+
+# 5. Start bot dengan PM2
+pm2 start ecosystem.config.cjs
+pm2 save
+pm2 startup
 ```
 
 ### Start dengan PM2
