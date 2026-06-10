@@ -1,0 +1,22 @@
+{
+  "name": "edel-runway-bot",
+  "version": "1.0.0",
+  "description": "Auto daily vote bot for Edel Finance Runway Desk Listing Calls",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "setup": "node src/index.js setup",
+    "vote": "node src/index.js vote",
+    "start": "node src/index.js start",
+    "status": "node src/index.js status"
+  },
+  "keywords": ["edel", "runway", "bot", "vote"],
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "^1.52.0",
+    "node-cron": "^3.0.3",
+    "dotenv": "^16.5.0",
+    "winston": "^3.17.0",
+    "chalk": "^5.4.1"
+  }
+}
