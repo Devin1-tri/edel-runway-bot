@@ -2,8 +2,6 @@
 
 Bot otomatis untuk daily vote pada **Listing Calls** di [Edel Finance Runway Desk](https://runway.edel.finance/listing-calls).
 
-**⚡ Pure HTTP** — tidak butuh Chrome/browser di VPS. Ringan dan cepat.
-
 ## ✨ Features
 
 - **Auto Vote** setiap 1 jam (configurable via cron)
