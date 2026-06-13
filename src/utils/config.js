@@ -11,7 +11,12 @@ dotenv.config({ path: path.join(ROOT, '.env') });
 const config = {
   // Voting
   voteStrategy: process.env.VOTE_STRATEGY || 'smart',
-  cronSchedule: process.env.CRON_SCHEDULE || '0 */1 * * *',
+  cronSchedule: process.env.CRON_SCHEDULE || '0 */1 * * *', // legacy, kept for reference
+
+  // Dynamic scheduling (replaces fixed cron)
+  voteIntervalMinutes: parseInt(process.env.VOTE_INTERVAL_MINUTES || '60', 10),
+  voteBufferMinutes: parseInt(process.env.VOTE_BUFFER_MINUTES || '2', 10),
+  retryIntervalMinutes: parseInt(process.env.RETRY_INTERVAL_MINUTES || '5', 10),
 
   // Browser
   headless: process.env.HEADLESS === 'true',

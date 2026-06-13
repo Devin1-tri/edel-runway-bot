@@ -1,4 +1,3 @@
-import cron from 'node-cron';
 import config from '../utils/config.js';
 import logger, { logSeparator } from '../utils/logger.js';
 import { performVote } from '../bot/voter.js';
@@ -12,8 +11,16 @@ import {
   sendTelegram,
 } from '../utils/telegram.js';
 
+// Track active timer for graceful shutdown
+let nextVoteTimer = null;
+
 /**
- * Execute a single vote cycle with retry logic
+ * Execute a single vote cycle with retry logic.
+ * Returns a status string for scheduling decisions:
+ *   'voted'         → successful vote
+ *   'already_voted' → already submitted for this round
+ *   'waiting'       → no round available / allocation pending
+ *   'failed'        → error / session expired
  */
 async function voteCycle() {
   logSeparator();
@@ -30,24 +37,25 @@ async function voteCycle() {
       if (result.success) {
         logger.info('🎉 Vote cycle completed successfully!');
 
-        // Send Telegram notification
+        // Send Telegram notification based on result type
         if (result.details?.note?.includes('Already submitted')) {
           await notifyAlreadyVoted(result.details.note);
+          return 'already_voted';
         } else if (result.details?.note) {
           // Informational (waiting, no round, etc.)
           await notifyAlreadyVoted(result.details.note);
+          return 'waiting';
         } else {
           await notifyVoteSuccess(result.details);
+          return 'voted';
         }
-        await notifyNextVote();
-        return;
       }
 
       // Check if session expired
       if (result.details?.sessionExpired) {
         logger.error('🔑 Session expired. Need re-import.');
         await notifySessionExpired();
-        return;
+        return 'failed';
       }
 
       lastError = result.details?.error;
@@ -81,20 +89,84 @@ async function voteCycle() {
   }
 
   logger.error(`❌ All ${config.maxRetries} attempts failed. Last error: ${lastError}`);
+  return 'failed';
 }
 
 /**
- * Start the cron scheduler
+ * Determine next delay (in ms) based on vote cycle result.
+ *
+ * - 'voted': full interval + buffer (default 62 min)
+ *     → vote berhasil, tunggu 1 jam + 2 menit agar EDELx unlock
+ * - 'already_voted' / 'waiting': shorter retry (default 5 min)
+ *     → belum siap, coba lagi sebentar lagi
+ * - 'failed': shorter retry (default 5 min)
+ *     → error, coba lagi sebentar lagi
  */
-export async function startScheduler() {
-  const schedule = config.cronSchedule;
+function getNextDelay(result) {
+  switch (result) {
+    case 'voted':
+      return (config.voteIntervalMinutes + config.voteBufferMinutes) * 60 * 1000;
+    case 'already_voted':
+    case 'waiting':
+      return config.retryIntervalMinutes * 60 * 1000;
+    case 'failed':
+    default:
+      return config.retryIntervalMinutes * 60 * 1000;
+  }
+}
 
-  // Validate cron expression
-  if (!cron.validate(schedule)) {
-    logger.error(`❌ Invalid cron schedule: "${schedule}"`);
-    process.exit(1);
+/**
+ * Schedule the next vote using dynamic setTimeout.
+ *
+ * Unlike fixed cron (0 */1 * * *) which runs at XX:00,
+ * this schedules relative to the LAST vote time.
+ *
+ * Example: vote at 22:37 → next at 23:39 (62 min later)
+ *
+ * @param {number} delayMs - Delay in milliseconds until next vote
+ * @returns {Date} The scheduled next vote time
+ */
+function scheduleNextVote(delayMs) {
+  if (nextVoteTimer) {
+    clearTimeout(nextVoteTimer);
+    nextVoteTimer = null;
   }
 
+  const nextTime = new Date(Date.now() + delayMs);
+  const nextStr = nextTime.toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+  const delayMin = Math.round(delayMs / 60000);
+
+  logger.info(`⏰ Next vote scheduled: ${nextStr} (in ${delayMin} minutes)`);
+
+  nextVoteTimer = setTimeout(async () => {
+    try {
+      const result = await voteCycle();
+      const nextDelay = getNextDelay(result);
+      const scheduledTime = scheduleNextVote(nextDelay);
+      await notifyNextVote(scheduledTime);
+    } catch (err) {
+      logger.error(`Scheduled vote cycle error: ${err.message}`);
+      // On unexpected error, retry in retryIntervalMinutes
+      const retryDelay = config.retryIntervalMinutes * 60 * 1000;
+      const scheduledTime = scheduleNextVote(retryDelay);
+      await notifyNextVote(scheduledTime);
+    }
+  }, delayMs);
+
+  return nextTime;
+}
+
+/**
+ * Start the dynamic vote scheduler.
+ *
+ * Flow:
+ *   1. Run initial vote immediately
+ *   2. Based on result, schedule next vote dynamically:
+ *      - Vote sukses → 62 min (1 jam + 2 min buffer)
+ *      - Belum siap  → 5 min retry
+ *   3. Repeat forever until bot stopped
+ */
+export async function startScheduler() {
   console.log('');
   console.log('\x1b[36m' +
   ` ██████╗  █████╗ ████████╗ ██████╗ ██╗  ██╗██████╗ ██████╗  ██████╗ ███╗   ██╗        ██╗  ██╗ ██████╗ █████╗ 
@@ -105,42 +177,39 @@ export async function startScheduler() {
  ╚═════╝ ╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝        ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝` + '\x1b[0m');
   console.log('');
   console.log('\x1b[90m  ──────────────────────────────────────────────────────────────────────────────────\x1b[0m');
-  console.log('\x1b[33m   ⚡ Edel Runway Desk — Auto Vote Bot v2.0\x1b[0m');
-  console.log('\x1b[90m   🌐 Pure HTTP Mode — No Browser Needed\x1b[0m');
+  console.log('\x1b[33m   ⚡ Edel Runway Desk — Auto Vote Bot v2.1\x1b[0m');
+  console.log('\x1b[90m   🌐 Pure HTTP Mode — Dynamic Scheduling\x1b[0m');
   console.log('\x1b[90m  ──────────────────────────────────────────────────────────────────────────────────\x1b[0m');
   console.log('');
-  logger.info(`📅 Schedule  : ${schedule}`);
-  logger.info(`🎯 Strategy  : ${config.voteStrategy}`);
-  logger.info(`🔄 Retries   : ${config.maxRetries}`);
-  logger.info(`📨 Telegram  : ${config.telegramBotToken ? 'Configured ✅' : 'Not configured ⚠️'}`);
+  logger.info(`📅 Interval : ${config.voteIntervalMinutes} min + ${config.voteBufferMinutes} min buffer`);
+  logger.info(`🔄 Retry    : every ${config.retryIntervalMinutes} min (when not ready)`);
+  logger.info(`🎯 Strategy : ${config.voteStrategy}`);
+  logger.info(`🔁 Retries  : ${config.maxRetries} per cycle`);
+  logger.info(`📨 Telegram : ${config.telegramBotToken ? 'Configured ✅' : 'Not configured ⚠️'}`);
   logger.info('');
 
   // Send Telegram notification that bot started
   await notifyBotStarted();
 
   logger.info('▶️  Running initial vote cycle...');
-  await voteCycle();
+  const result = await voteCycle();
+
+  // Schedule next vote dynamically based on result
+  const nextDelay = getNextDelay(result);
+  const nextTime = scheduleNextVote(nextDelay);
+  await notifyNextVote(nextTime);
 
   logger.info('');
-  logger.info('⏳ Waiting for next scheduled run...');
-  logger.info(`   (Schedule: "${schedule}")`);
-
-  // Schedule recurring runs
-  const job = cron.schedule(schedule, async () => {
-    try {
-      await voteCycle();
-    } catch (err) {
-      logger.error(`Scheduled vote cycle error: ${err.message}`);
-    }
-  }, {
-    timezone: 'Asia/Jakarta',
-  });
+  logger.info('📡 Bot is running with dynamic scheduling...');
 
   // Handle graceful shutdown
   const shutdown = async () => {
     logger.info('');
     logger.info('🛑 Bot stopping...');
-    job.stop();
+    if (nextVoteTimer) {
+      clearTimeout(nextVoteTimer);
+      nextVoteTimer = null;
+    }
     const time = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
     await sendTelegram(`🛑 *BOT STOPPED*\n\n🕐 Waktu: ${time}`);
     logger.info('👋 Goodbye!');
@@ -149,8 +218,6 @@ export async function startScheduler() {
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
-
-  return job;
 }
 
 /**

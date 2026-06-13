@@ -58,8 +58,6 @@ export async function notifyVoteSuccess(details = {}) {
     `📅 Round: ${details.round || 'N/A'}`,
     `🕐 Waktu: ${time}`,
     details.note ? `📝 Note: ${details.note}` : '',
-    '',
-    `⏰ Vote selanjutnya dalam ~1 jam`,
   ].filter(Boolean).join('\n');
 
   return sendTelegram(msg);
@@ -106,14 +104,16 @@ export async function notifySessionExpired() {
  */
 export async function notifyBotStarted() {
   const time = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+  const totalMin = config.voteIntervalMinutes + config.voteBufferMinutes;
   const msg = [
     '🤖 *BOT STARTED*',
     '',
     `🎯 Strategy: \`${config.voteStrategy}\``,
-    `📅 Schedule: \`${config.cronSchedule}\``,
+    `📅 Interval: ${config.voteIntervalMinutes} min + ${config.voteBufferMinutes} min buffer = ${totalMin} min`,
+    `🔄 Retry: setiap ${config.retryIntervalMinutes} min (jika belum siap)`,
     `🕐 Started: ${time}`,
     '',
-    'Bot akan vote otomatis setiap 1 jam.',
+    'Bot akan vote otomatis dengan dynamic scheduling.',
   ].join('\n');
 
   return sendTelegram(msg);
@@ -122,16 +122,20 @@ export async function notifyBotStarted() {
 /**
  * Notify next vote scheduled
  */
-export async function notifyNextVote() {
+export async function notifyNextVote(nextTime) {
+  const nextStr = nextTime
+    ? nextTime.toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })
+    : 'Unknown';
+
   const now = new Date();
-  // Approximate next run (1 hour from now)
-  const next = new Date(now.getTime() + 60 * 60 * 1000);
-  const nextStr = next.toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+  const diffMs = nextTime ? nextTime.getTime() - now.getTime() : 0;
+  const diffMin = Math.round(diffMs / 60000);
 
   const msg = [
     '⏰ *NEXT VOTE SCHEDULED*',
     '',
-    `🕐 Estimasi vote selanjutnya: ${nextStr}`,
+    `🕐 Vote selanjutnya: ${nextStr}`,
+    `⏳ Dalam ${diffMin} menit`,
     '📡 Bot tetap berjalan...',
   ].join('\n');
 
