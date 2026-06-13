@@ -118,7 +118,7 @@ function getNextDelay(result) {
 /**
  * Schedule the next vote using dynamic setTimeout.
  *
- * Unlike fixed cron (0 */1 * * *) which runs at XX:00,
+ * Unlike fixed cron which runs at XX:00 every hour,
  * this schedules relative to the LAST vote time.
  *
  * Example: vote at 22:37 → next at 23:39 (62 min later)
