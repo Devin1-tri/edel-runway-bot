@@ -61,37 +61,9 @@ Cara ambil cookie:
 > 💡 Yang penting ada cookie `edel_session=eyJ...` (JWT token).
 > Bisa juga paste cuma token-nya yang dimulai `eyJ...`
 
-### 5. Test & Run
+### 5. Run di Screen
 
 ```bash
-# Test vote sekali
-npm run vote
-
-# Cek status session
-npm run status
-```
-
-## 🖥️ VPS Deployment (Screen)
-
-### Full Setup (copy-paste ke VPS)
-
-```bash
-# 1. Clone & install
-git clone https://github.com/AaBatok/Edel.git
-cd Edel
-npm install
-
-# 2. Config
-cp .env.example .env
-nano .env   # isi TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID
-
-# 3. Import session dari Chrome PC
-npm run import
-
-# 4. Test vote dulu
-npm run vote
-
-# 5. Jalankan bot di screen
 screen -S edel
 npm run start
 # Tekan Ctrl+A lalu D untuk detach (bot tetap jalan)
@@ -108,14 +80,6 @@ screen -ls              # Lihat semua screen aktif
 ```
 
 ### Update Bot
-
-```bash
-screen -r edel          # Masuk screen
-# Ctrl+C                # Stop bot
-git pull                # Ambil update terbaru
-npm run start           # Jalankan lagi
-# Ctrl+A lalu D         # Detach
-```
 
 ### Re-import Session (kalau expired)
 
