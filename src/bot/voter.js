@@ -90,7 +90,8 @@ function parseRoundData(data) {
   // ── Detect preview ──────────────────────────
   if (data.preview) {
     isPreview = true;
-    if (!roundId) roundId = data.preview.id;
+    // For preview submit, we MUST use preview.id as the previewId
+    roundId = data.preview.id;
     if (!status) status = 'LOCKED'; // preview = selections open
     if (!stakeAmount) stakeAmount = data.preview.stakeAmount;
   }
@@ -105,6 +106,9 @@ function parseRoundData(data) {
 
   // ── Find fixtures/decisions from ALL possible locations ──
   const candidateArrays = [
+    // Preview API uses "options" for the head-to-head calls
+    data.preview?.options,
+    data.options,
     // Top-level
     data.decisions,
     data.fixtures,
@@ -116,10 +120,11 @@ function parseRoundData(data) {
     data.round?.fixtures,
     data.round?.listingDecisions,
     data.round?.roundDecisions,
+    data.round?.options,
     data.round?.calls,
     data.round?.round?.decisions,
     data.round?.round?.fixtures,
-    // Inside preview
+    // Inside preview (other field names)
     data.preview?.decisions,
     data.preview?.fixtures,
     data.preview?.listingDecisions,
