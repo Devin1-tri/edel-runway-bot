@@ -3,6 +3,15 @@
  *
  * All endpoints are relative to https://runway.edel.finance
  * Auth is handled via the `edel_session` cookie (credentials: include).
+ *
+ * Updated for Preview Listing Round API (June 2026):
+ *   GET  /listing/status          → listing system status
+ *   GET  /listing-round           → current round + preview data
+ *   POST /listing-round           → prepare/start a new round
+ *   POST /listing-round/submit    → submit selections
+ *   GET  /assets                  → all assets
+ *   GET  /demand-index            → demand index rankings
+ *   GET  /balances                → user balances
  */
 import config from '../utils/config.js';
 import logger from '../utils/logger.js';
@@ -111,29 +120,82 @@ export async function getAssets() {
 }
 
 /**
- * Get current listing round + fixtures + actions
- * GET /listing-rounds/current
+ * Get listing system status
+ * GET /listing/status
+ */
+export async function getListingStatus() {
+  return apiGet('/listing/status');
+}
+
+/**
+ * Get current listing round (Preview API)
+ * GET /listing-round
+ *
+ * Returns preview-format round data with:
+ *   - round or preview object
+ *   - actions (prepareRound, submitPreview, etc.)
+ *   - currentWindow
  */
 export async function getCurrentRound() {
-  return apiGet('/listing-rounds/current');
+  // Try preview API first (new)
+  try {
+    const data = await apiGet('/listing-round');
+    return data;
+  } catch (err) {
+    // If preview API fails, try legacy endpoint as fallback
+    if (err.message.includes('404') || err.message.includes('ROUTE_NOT_FOUND')) {
+      logger.debug('Preview API failed, trying legacy /listing-rounds/current...');
+      return apiGet('/listing-rounds/current');
+    }
+    throw err;
+  }
 }
 
 /**
- * Start a new listing round (opens call window)
- * POST /listing-rounds/start
+ * Start/prepare a new listing round (Preview API)
+ * POST /listing-round
  */
 export async function startRound() {
-  return apiPost('/listing-rounds/start', {});
+  try {
+    return await apiPost('/listing-round', {});
+  } catch (err) {
+    if (err.message.includes('404') || err.message.includes('ROUTE_NOT_FOUND')) {
+      logger.debug('Preview start failed, trying legacy /listing-rounds/start...');
+      return apiPost('/listing-rounds/start', {});
+    }
+    throw err;
+  }
 }
 
 /**
- * Submit picks (votes) for a round
- * POST /listing-rounds/{roundId}/picks
+ * Submit picks/selections (Preview API)
+ * POST /listing-round/submit
  *
- * @param {string} roundId
- * @param {Array<{roundDecisionId: string, assetId: string}>} picks
+ * Preview API format:
+ *   { previewId: string, picks: [{listingDecisionId, assetId}] }
+ *
+ * Legacy API format:
+ *   POST /listing-rounds/{roundId}/picks
+ *   { picks: [{roundDecisionId, assetId}] }
+ *
+ * @param {string} roundId - Round ID or preview ID
+ * @param {Array} picks - Array of pick objects
+ * @param {object} opts
+ * @param {boolean} opts.isPreview - Whether to use preview API
  */
-export async function submitPicks(roundId, picks) {
+export async function submitPicks(roundId, picks, { isPreview = false } = {}) {
+  if (isPreview) {
+    // Preview API: POST /listing-round/submit
+    return apiPost('/listing-round/submit', {
+      previewId: roundId,
+      picks: picks.map((p) => ({
+        listingDecisionId: p.roundDecisionId || p.listingDecisionId,
+        assetId: p.assetId,
+      })),
+    });
+  }
+
+  // Legacy API: POST /listing-rounds/{roundId}/picks
   return apiPost(`/listing-rounds/${roundId}/picks`, { picks });
 }
 
@@ -160,12 +222,16 @@ export async function getBalance(instrumentId) {
  */
 export async function checkSession() {
   try {
-    await getCurrentRound();
+    await apiGet('/listing/status');
     return true;
   } catch (err) {
     if (err.message.includes('SESSION_EXPIRED')) return false;
-    // Other errors (network, etc.) - still might be valid
-    logger.debug(`Session check error: ${err.message}`);
-    return false;
+    // Try a lightweight endpoint
+    try {
+      await apiGet('/profile');
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

@@ -1,10 +1,14 @@
 /**
  * Core voting engine — pure HTTP, no browser needed.
  *
+ * Updated for Preview Listing Round API (June 2026).
+ *
  * Flow:
- *   1. GET /listing-rounds/current → check round status & fixtures
- *   2. If status is LOCKED → selections are open → pick assets
- *   3. POST /listing-rounds/{roundId}/picks → submit all picks
+ *   1. GET /listing-round → check round/preview status & fixtures
+ *   2. If status is LOCKED or preview has decisions → pick assets
+ *   3. POST /listing-round/submit → submit all selections
+ *
+ * Handles both Preview API (new) and Legacy API (old) response formats.
  */
 import config from '../utils/config.js';
 import logger, { logVote, logSeparator } from '../utils/logger.js';
@@ -26,7 +30,10 @@ function findKey(obj, key, maxDepth = 5) {
 
 /**
  * Extract round info from the API response, regardless of nesting.
- * The API may return different structures, so we search flexibly.
+ *
+ * Supports both:
+ *   - Preview API: { preview: {...}, actions: {prepareRound, submitPreview}, currentWindow }
+ *   - Legacy API:  { round: {...}, fixtures: [...], actions: {startRound} }
  */
 function parseRoundData(data) {
   if (!data) return null;
@@ -35,46 +42,89 @@ function parseRoundData(data) {
   const keys = Object.keys(data);
   logger.debug(`📦 API response keys: ${keys.join(', ')}`);
 
-  // Find the round status - could be at various nesting levels
-  // Possible: data.round.status, data.round.round.status, data.status
   let status = null;
   let roundId = null;
   let fixtures = null;
   let actions = null;
   let stakeAmount = null;
+  let isPreview = false;
 
-  // Try direct: data.round.status (raw API)
-  if (data.round && typeof data.round === 'object') {
+  // ── Preview API format ──────────────────────
+  // { preview: { id, roundWindowId, decisions: [...], ... }, actions: {...}, currentWindow: {...} }
+  if (data.preview) {
+    isPreview = true;
+    const preview = data.preview;
+    roundId = preview.id;
+    status = 'LOCKED'; // If preview exists, selections are open
+    stakeAmount = preview.stakeAmount;
+
+    // Decisions in preview format
+    fixtures = preview.decisions || preview.fixtures || [];
+
+    // Map preview decisions to our standard fixture format
+    if (fixtures.length > 0 && fixtures[0].listingDecisionId) {
+      fixtures = fixtures.map((d) => ({
+        id: d.listingDecisionId || d.id,
+        roundDecisionId: d.listingDecisionId || d.id,
+        teamAId: d.optionA?.assetId || d.assetAId || d.teamAId,
+        teamBId: d.optionB?.assetId || d.assetBId || d.teamBId,
+        selectedTeamId: d.selectedAssetId || d.selectedTeamId || null,
+        optionA: d.optionA,
+        optionB: d.optionB,
+        _raw: d,
+      }));
+    }
+
+    actions = data.actions || {};
+    logger.debug(`📊 Preview format: id=${roundId}, decisions=${fixtures.length}`);
+  }
+
+  // ── Legacy API format ──────────────────────
+  // { round: { status, id, fixtures/decisions }, actions: {startRound} }
+  if (!isPreview && data.round) {
     if (data.round.status && typeof data.round.status === 'string') {
-      // data.round IS the round object
       status = data.round.status;
       roundId = data.round.id || data.round.roundId;
       stakeAmount = data.round.stakeAmount;
     } else if (data.round.round && typeof data.round.round === 'object') {
-      // data.round.round is the actual round (transformed response)
       status = data.round.round.status;
       roundId = data.round.round.id || data.round.round.roundId;
       stakeAmount = data.round.round.stakeAmount;
     }
   }
 
-  // Find fixtures (could be called decisions, fixtures, or nested)
-  fixtures = data.fixtures || data.decisions ||
-    data.round?.fixtures || data.round?.decisions ||
-    findKey(data, 'fixtures') || findKey(data, 'decisions') || [];
+  // ── Status from top-level (some responses) ──
+  if (!status && data.status && typeof data.status === 'string') {
+    status = data.status;
+  }
+  if (!roundId) {
+    roundId = data.roundId || data.id || findKey(data, 'roundId') || findKey(data, 'id');
+  }
 
-  // Ensure fixtures is an array
+  // ── Fixtures (if not already set from preview) ──
+  if (!fixtures || fixtures.length === 0) {
+    fixtures = data.fixtures || data.decisions ||
+      data.round?.fixtures || data.round?.decisions ||
+      findKey(data, 'fixtures') || findKey(data, 'decisions') || [];
+  }
+
   if (!Array.isArray(fixtures)) fixtures = [];
 
-  // Find actions
-  actions = data.actions || data.round?.actions || {};
+  // ── Actions ──
+  if (!actions) {
+    actions = data.actions || data.round?.actions || {};
+  }
 
-  // Find currentWindow
+  // ── Normalize action names (preview uses prepareRound, legacy uses startRound) ──
+  if (actions.prepareRound && !actions.startRound) {
+    actions.startRound = actions.prepareRound;
+  }
+
   const currentWindow = data.currentWindow || data.round?.currentWindow || null;
 
-  logger.debug(`📊 Parsed: status=${status}, roundId=${roundId}, fixtures=${fixtures.length}, actions=${JSON.stringify(Object.keys(actions))}`);
+  logger.debug(`📊 Parsed: status=${status}, roundId=${roundId}, fixtures=${fixtures.length}, isPreview=${isPreview}, actions=${JSON.stringify(Object.keys(actions))}`);
 
-  return { status, roundId, fixtures, actions, stakeAmount, currentWindow, raw: data };
+  return { status, roundId, fixtures, actions, stakeAmount, currentWindow, isPreview, raw: data };
 }
 
 /**
@@ -82,9 +132,9 @@ function parseRoundData(data) {
  */
 function getFixtureTeams(fixture) {
   return {
-    id: fixture.id || fixture.roundDecisionId,
-    teamAId: fixture.teamAId || fixture.assetAId || fixture.optionA?.id,
-    teamBId: fixture.teamBId || fixture.assetBId || fixture.optionB?.id,
+    id: fixture.id || fixture.roundDecisionId || fixture.listingDecisionId,
+    teamAId: fixture.teamAId || fixture.assetAId || fixture.optionA?.assetId || fixture.optionA?.id,
+    teamBId: fixture.teamBId || fixture.assetBId || fixture.optionB?.assetId || fixture.optionB?.id,
     selectedTeamId: fixture.selectedTeamId || fixture.selectedAssetId || null,
   };
 }
@@ -152,6 +202,9 @@ export async function performVote() {
 
     logger.info(`📊 Round status: ${formatStatus(parsed.status)}`);
     logger.info(`📋 Fixtures: ${parsed.fixtures.length}`);
+    if (parsed.isPreview) {
+      logger.info(`🆕 Using Preview API`);
+    }
 
     // Step 2: Already submitted?
     if (['SUBMITTED', 'SETTLEMENT_PENDING', 'SETTLED'].includes(parsed.status)) {
@@ -180,7 +233,7 @@ export async function performVote() {
     // Step 4: Window closed / failed?
     if (['EXPIRED', 'FAILED'].includes(parsed.status)) {
       // Try to start a new round
-      const startAction = parsed.actions?.startRound;
+      const startAction = parsed.actions?.startRound || parsed.actions?.prepareRound;
       if (startAction?.enabled !== false) {
         logger.info('🚀 Starting new listing round...');
         const startResult = await startRound();
@@ -212,7 +265,7 @@ export async function performVote() {
 
     // Step 5: No round at all? Try to start one.
     if (!parsed.status) {
-      const startAction = parsed.actions?.startRound;
+      const startAction = parsed.actions?.startRound || parsed.actions?.prepareRound;
       if (startAction?.enabled !== false) {
         logger.info('🚀 No active round. Starting new one...');
         const startResult = await startRound();
@@ -262,7 +315,7 @@ export async function performVote() {
  * Actually perform voting on open fixtures
  */
 async function doVoting(parsed, strategy) {
-  const { roundId, fixtures } = parsed;
+  const { roundId, fixtures, isPreview } = parsed;
   logger.info(`✅ Calls are OPEN! ${fixtures.length} head-to-head fixtures`);
 
   // Load assets for display
@@ -306,7 +359,7 @@ async function doVoting(parsed, strategy) {
 
   // Submit all picks
   logger.info(`📤 Submitting ${picks.length} picks for round ${roundId}...`);
-  const result = await submitPicks(roundId, picks);
+  const result = await submitPicks(roundId, picks, { isPreview });
 
   const newParsed = parseRoundData(result);
   logger.info(`✅ Picks submitted! Status: ${formatStatus(newParsed?.status)}`);
