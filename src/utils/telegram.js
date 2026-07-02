@@ -122,12 +122,11 @@ export async function notifySessionExpired() {
  */
 export async function notifyBotStarted() {
   const time = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
-  const totalMin = config.voteIntervalMinutes + config.voteBufferMinutes;
   const msg = [
     '🤖 *BOT STARTED*',
     '',
     `🎯 Strategy: \`${config.voteStrategy}\``,
-    `📅 Interval: ${config.voteIntervalMinutes} min + ${config.voteBufferMinutes} min buffer = ${totalMin} min`,
+    `📅 Scheduling: syncs with round window + random +5-9 min buffer`,
     `🔄 Retry: every ${config.retryIntervalMinutes} min (if not ready)`,
     `🕐 Started: ${time}`,
     '',

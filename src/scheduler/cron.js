@@ -263,7 +263,7 @@ export async function startScheduler() {
     interval: String(totalMin),
   });
 
-  logger.info(`📅 Interval : ${config.voteIntervalMinutes}m + ${config.voteBufferMinutes}m buffer = ${totalMin}m`);
+  logger.info(`📅 Scheduling: syncs with round window + random +5-9 min buffer`);
   logger.info(`🔄 Retry    : every ${config.retryIntervalMinutes}m`);
   logger.info(`🎯 Strategy : ${config.voteStrategy}`);
   logger.info(`📨 Telegram : ${config.telegramBotToken ? 'Configured ✅' : 'Not configured ⚠️'}`);
