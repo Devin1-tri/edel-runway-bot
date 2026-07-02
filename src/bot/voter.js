@@ -254,6 +254,8 @@ export async function performVote() {
       || rawData?.currentWindow?.timing
       || rawData?.timing
       || parsed.raw?.currentWindow?.timing
+      || rawData?.round?.timing
+      || parsed.raw?.round?.timing
       || null;
 
     // Debug round timing
@@ -435,6 +437,13 @@ async function doVoting(parsed, strategy) {
   const newParsed = parseRoundData(result);
   logger.info(`✅ Picks submitted! Status: ${formatStatus(newParsed?.status)}`);
 
+  // Extract timing from submit response (may be in round.timing or currentWindow.timing)
+  const submitTiming = newParsed?.currentWindow?.timing
+    || result?.currentWindow?.timing
+    || result?.round?.timing
+    || newParsed?.raw?.round?.timing
+    || null;
+
   const pickedAssets = picks
     .map((p) => assetMap.get(p.assetId)?.ticker || 'unknown')
     .join(', ');
@@ -447,5 +456,5 @@ async function doVoting(parsed, strategy) {
   };
 
   logVote(true, details);
-  return { success: true, details };
+  return { success: true, details, roundTiming: submitTiming };
 }
