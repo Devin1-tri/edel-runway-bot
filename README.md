@@ -116,6 +116,7 @@ Set `VOTE_STRATEGY` in `.env` to choose how the bot picks assets in each head-to
 | `marketcap` | Pick the asset with higher market cap |
 | `popular` | Pick by brand/hype tier (AI/tech hype > blue chips > rest) |
 | `underdog` | Pick the smaller company (contrarian strategy) |
+| `demand` | Pick based on Edel's Demand Index (actual voting history — community behavior) |
 | `pick-<TICKER>` | Always pick a specific ticker when it appears in a matchup |
 
 ### Strategy Details
@@ -139,6 +140,15 @@ Within the same tier, picks randomly.
 Picks the asset with the *lower* market cap. The contrarian approach — smaller companies may have more upside, and the "underdog" narrative can be compelling in listing calls.
 
 **Best for:** Contrarian plays and supporting smaller companies.
+
+#### `demand`
+Picks based on Edel's actual Demand Index — the real voting history from the community. The asset ranked higher in the Demand Index (more wins, higher score) gets picked.
+
+Current top 5: NVDA > TSLA > NFLX > AAPL > MSFT
+
+This is the most data-driven strategy since it uses actual community behavior rather than assumptions.
+
+**Best for:** Aligning with proven community preferences — vote with the winners.
 
 #### `pick-<TICKER>`
 Always picks a specific ticker whenever it appears in a matchup. Falls back to random for matchups that don't include that ticker.
@@ -170,7 +180,7 @@ VOTE_STRATEGY=pick-PLTR    # Always pick Palantir
 
 | Variable | Default | Description |
 |---|---|---|
-| `VOTE_STRATEGY` | `smart` | `smart` / `random` / `first` / `second` / `marketcap` / `popular` / `underdog` / `pick-<TICKER>` |
+| `VOTE_STRATEGY` | `smart` | `smart` / `random` / `first` / `second` / `marketcap` / `popular` / `underdog` / `demand` / `pick-<TICKER>` |
 | `VOTE_INTERVAL_MINUTES` | `60` | Minutes between vote cycles |
 | `VOTE_BUFFER_MINUTES` | `2` | Extra buffer after round closes |
 | `RETRY_INTERVAL_MINUTES` | `5` | Minutes between retries on failure |

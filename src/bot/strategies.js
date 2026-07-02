@@ -179,6 +179,82 @@ export function underdogStrategy(assetAId, assetBId, assetMap) {
   return rankA <= rankB ? assetAId : assetBId;
 }
 
+// ── Demand Index ranking (actual voting history from Edel) ──
+// Updated from https://runway.edel.finance/demand-index
+// Higher number = higher rank = more popular in listing calls
+// Last updated: 2026-07-02
+const DEMAND_RANK = {
+  'asset-NVDA':  52, // #1  Score: 22,462,475
+  'asset-TSLA':  51, // #2  Score: 21,217,576
+  'asset-NFLX':  50, // #3  Score: 20,798,162
+  'asset-AAPL':  49, // #4  Score: 20,394,774
+  'asset-MSFT':  48, // #5  Score: 20,162,131
+  'asset-META':  47, // #6  Score: 19,319,432
+  'asset-AMZN':  46, // #7  Score: 19,255,530
+  'asset-ORCL':  45, // #8  Score: 18,431,824
+  'asset-MA':    44, // #9  Score: 17,713,438
+  'asset-V':     43, // #10 Score: 17,672,121
+  'asset-NDX':   42, // #11 Score: 17,074,933
+  'asset-INTC':  41, // #12 Score: 16,317,025
+  'asset-DELL':  40, // #13 Score: 14,970,343
+  'asset-KO':    39, // #14 Score: 14,557,485
+  'asset-BAC':   38, // #15 Score: 14,535,002
+  'asset-SPX':   37, // #16 Score: 14,162,586
+  'asset-AMD':   36, // #17 Score: 13,987,989
+  'asset-JPM':   35, // #18 Score: 13,652,341
+  'asset-QCOM':  34, // #19 Score: 13,515,357
+  'asset-GOOGL': 33, // #20 Score: 13,487,242
+  'asset-RTX':   32, // #21 Score: 12,948,965
+  'asset-SNDK':  31, // #22 Score: 12,383,348
+  'asset-MS':    30, // #23 Score: 12,308,924
+  'asset-PLTR':  29, // #24 Score: 12,135,819
+  'asset-MU':    28, // #25 Score: 11,664,394
+  'asset-WMT':   27, // #26 Score: 11,213,780
+  'asset-GS':    26, // #27 Score: 10,597,910
+  'asset-TXN':   25, // #28 Score: 10,539,340
+  'asset-IBM':   24, // #29 Score: 10,025,282
+  'asset-AVGO':  23, // #30 Score:  9,816,371
+  'asset-XOM':   22, // #31 Score:  8,999,680
+  'asset-PM':    21, // #32 Score:  8,437,958
+  'asset-PG':    20, // #33 Score:  8,429,023
+  'asset-JNJ':   19, // #34 Score:  8,415,287
+  'asset-COST':  18, // #35 Score:  8,305,325
+  'asset-CAT':   17, // #36 Score:  8,042,227
+  'asset-BRK.B': 16, // #37 Score:  7,937,580
+  'asset-CVX':   15, // #38 Score:  7,741,495
+  'asset-AMAT':  14, // #39 Score:  7,655,379
+  'asset-CSCO':  13, // #40 Score:  7,574,656
+  'asset-ABBV':  12, // #41 Score:  7,523,174
+  'asset-WFC':   11, // #42 Score:  7,329,319
+  'asset-UNH':   10, // #43 Score:  6,691,829
+  'asset-LRCX':   9, // #44 Score:  6,639,145
+  'asset-LLY':    8, // #45 Score:  6,536,151
+  'asset-AZN':    7, // #46 Score:  6,255,955
+  'asset-LIN':    6, // #47 Score:  5,754,225
+  'asset-MRK':    5, // #48 Score:  5,446,314
+  'asset-HD':     4, // #49 Score:  5,209,189
+  'asset-KLAC':   3, // #50 Score:  4,758,150
+  'asset-GEV':    2, // #51 Score:  4,489,132
+  'asset-GE':     1, // #52 Score:  4,258,771
+};
+
+/**
+ * Demand Index strategy: pick the asset ranked higher in Edel's Demand Index.
+ * Uses actual voting history data — the asset that wins more often in listing calls.
+ * Falls back to random if neither asset is in the ranking.
+ */
+export function demandStrategy(assetAId, assetBId, assetMap) {
+  const rankA = DEMAND_RANK[assetAId] ?? 0;
+  const rankB = DEMAND_RANK[assetBId] ?? 0;
+
+  if (rankA === 0 && rankB === 0) {
+    return Math.random() < 0.5 ? assetAId : assetBId;
+  }
+
+  // Pick the one with higher demand rank
+  return rankA >= rankB ? assetAId : assetBId;
+}
+
 /**
  * Always-pick-A strategy for a specific ticker.
  * Set via ALWAYS_PICK env var (e.g. ALWAYS_PICK=NVDA).
@@ -205,6 +281,7 @@ export const STRATEGIES = {
   marketcap: marketcapStrategy,
   popular:   popularStrategy,
   underdog:  underdogStrategy,
+  demand:    demandStrategy,
 };
 
 export function pickAsset(assetAId, assetBId, assetMap, strategy, opts = {}) {
