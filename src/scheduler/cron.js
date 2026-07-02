@@ -145,15 +145,18 @@ function getNextDelay(result, roundTiming = null) {
   const retryMs = config.retryIntervalMinutes * 60 * 1000;
 
   switch (result) {
-    case 'voted': {
-      // Try to sync with round timing
+    case 'voted':
+    case 'already_voted': {
+      // Both cases: we already voted this round → wait for next round
       if (roundTiming?.nextRoundStartsAt) {
         const nextRound = new Date(roundTiming.nextRoundStartsAt).getTime();
         const bufferMs = config.voteBufferMinutes * 60 * 1000;
         const delay = nextRound + bufferMs - Date.now();
 
         if (delay > 0) {
-          logger.info(`📅 Syncing with round: next opens at ${new Date(nextRound).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}, voting in ${Math.round(delay / 60000)} min`);
+          const nextStr = new Date(nextRound).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+          const delayMin = Math.round(delay / 60000);
+          logger.info(`📅 Syncing with round: next opens at ${nextStr}, voting in ${delayMin} min`);
           return delay;
         }
       }
@@ -162,7 +165,6 @@ function getNextDelay(result, roundTiming = null) {
       logger.info('📅 No round timing available, using fixed interval');
       return (config.voteIntervalMinutes + config.voteBufferMinutes) * 60 * 1000;
     }
-    case 'already_voted':
     case 'waiting':
     case 'failed':
     default:
