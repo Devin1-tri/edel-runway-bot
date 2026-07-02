@@ -6,7 +6,8 @@ Fork of [AaBatok/Edel](https://github.com/AaBatok/Edel) with additional voting s
 
 ## ✨ Features
 
-- **Auto Vote** every 1 hour (configurable interval)
+- **Auto Vote** every round (syncs with round window automatically)
+- **Smart Scheduling** — waits for next round to open + random 5-9 min buffer (no fixed interval)
 - **Multiple Voting Strategies** — marketcap, popular, underdog, or always-pick-a-ticker
 - **Telegram Notifications** — real-time alerts on vote success/failure
 - **Session Import** — login in Chrome, copy cookie, paste on VPS
@@ -103,6 +104,23 @@ npm run start           # Restart
 
 ---
 
+## ⏰ Smart Scheduling
+
+The bot automatically syncs with Edel's round windows instead of using a fixed timer.
+
+**How it works:**
+1. After voting (or detecting "already submitted"), the bot reads `nextRoundStartsAt` from the API
+2. Waits until that time + a random buffer of **+5 to +9 minutes**
+3. This random delay makes the bot look more human-like
+4. If round timing is unavailable (API down), falls back to fixed 65-min interval
+
+**Example:**
+```
+Round opens at 15:00 → Bot votes at 15:07 (+7 min buffer)
+Round opens at 16:00 → Bot votes at 16:05 (+5 min buffer)
+Round opens at 17:00 → Bot votes at 17:09 (+9 min buffer)
+```
+
 ## 🎯 Voting Strategies
 
 Set `VOTE_STRATEGY` in `.env` to choose how the bot picks assets in each head-to-head matchup.
@@ -181,9 +199,9 @@ VOTE_STRATEGY=pick-PLTR    # Always pick Palantir
 | Variable | Default | Description |
 |---|---|---|
 | `VOTE_STRATEGY` | `smart` | `smart` / `random` / `first` / `second` / `marketcap` / `popular` / `underdog` / `demand` / `pick-<TICKER>` |
-| `VOTE_INTERVAL_MINUTES` | `60` | Minutes between vote cycles |
-| `VOTE_BUFFER_MINUTES` | `2` | Extra buffer after round closes |
-| `RETRY_INTERVAL_MINUTES` | `5` | Minutes between retries on failure |
+| `VOTE_INTERVAL_MINUTES` | `60` | Fallback interval if round timing unavailable |
+| `VOTE_BUFFER_MINUTES` | `2` | Fallback buffer (random +5 to +9 min used by default) |
+| `RETRY_INTERVAL_MINUTES` | `1` | Minutes between retries on failure |
 | `MAX_RETRIES` | `3` | Number of retries per vote cycle |
 | `TELEGRAM_BOT_TOKEN` | _(empty)_ | Token from @BotFather |
 | `TELEGRAM_CHAT_ID` | _(empty)_ | Your Telegram Chat ID |
