@@ -95,7 +95,11 @@ async function voteCycle() {
       }
 
       lastError = result.details?.error;
-      logger.warn(`⚠️  Attempt ${attempt} failed: ${lastError}`);
+      // Simplify error for log — strip HTML
+      const shortError = (lastError || '').includes('502') || (lastError || '').includes('504')
+        ? 'Server timeout (502/504)'
+        : (lastError || '').substring(0, 100);
+      logger.warn(`⚠️  Attempt ${attempt}/${config.maxRetries} failed: ${shortError}`);
 
       await notifyVoteFailed({
         ...result.details,
@@ -105,7 +109,10 @@ async function voteCycle() {
       });
     } catch (err) {
       lastError = err.message;
-      logger.error(`💥 Attempt ${attempt} crashed: ${err.message}`);
+      const shortCrash = (lastError || '').includes('502') || (lastError || '').includes('504')
+        ? 'Server timeout (502/504)'
+        : (lastError || '').substring(0, 100);
+      logger.error(`💥 Attempt ${attempt}/${config.maxRetries} crashed: ${shortCrash}`);
 
       await notifyVoteFailed({
         error: err.message,
@@ -124,7 +131,10 @@ async function voteCycle() {
     }
   }
 
-  logger.error(`❌ All ${config.maxRetries} attempts failed. Last error: ${lastError}`);
+  const shortFinal = (lastError || '').includes('502') || (lastError || '').includes('504')
+    ? 'Server timeout (502/504)'
+    : (lastError || '').substring(0, 100);
+  logger.error(`❌ All ${config.maxRetries} attempts failed: ${shortFinal}`);
   return { status: 'failed', roundTiming };
 }
 

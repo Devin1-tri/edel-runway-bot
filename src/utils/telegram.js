@@ -68,10 +68,19 @@ export async function notifyVoteSuccess(details = {}) {
  */
 export async function notifyVoteFailed(details = {}) {
   const time = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+
+  // Clean up error message — strip HTML and keep it short
+  let errorMsg = details.error || 'Unknown';
+  if (errorMsg.includes('502') || errorMsg.includes('504')) {
+    errorMsg = 'Server timeout (502/504) — Edel API unstable';
+  } else if (errorMsg.includes('HTML') || errorMsg.includes('<html>')) {
+    errorMsg = errorMsg.substring(0, 100) + '...';
+  }
+
   const msg = [
-    '❌ *VOTE GAGAL*',
+    '❌ *VOTE FAILED*',
     '',
-    `⚠️ Error: ${details.error || 'Unknown'}`,
+    `⚠️ ${errorMsg}`,
     `🎯 Strategy: \`${details.strategy || 'N/A'}\``,
     `🕐 Time: ${time}`,
     `🔄 Attempt: ${details.attempt || '?'}/${details.maxAttempts || '?'}`,
