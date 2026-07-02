@@ -249,6 +249,9 @@ export async function performVote() {
       return { success: false, details: { error: 'Empty API response', strategy } };
     }
 
+    // Extract round timing for smart scheduling
+    const roundTiming = parsed.currentWindow?.timing || rawData?.currentWindow?.timing || null;
+
     logger.info(`📊 Round status: ${formatStatus(parsed.status)}`);
     logger.info(`📋 Fixtures: ${parsed.fixtures.length}`);
     if (parsed.isPreview) {
@@ -260,6 +263,7 @@ export async function performVote() {
       logger.info('ℹ️  Already submitted for this round.');
       return {
         success: true,
+        roundTiming,
         details: {
           asset: 'N/A', strategy, round: parsed.roundId,
           note: `Already submitted (${formatStatus(parsed.status)})`,
@@ -272,6 +276,7 @@ export async function performVote() {
       logger.info('⏳ Allocation pending. Calls not open yet.');
       return {
         success: true,
+        roundTiming,
         details: {
           asset: 'N/A', strategy, round: parsed.roundId,
           note: `Waiting (${formatStatus(parsed.status)})`,
@@ -297,6 +302,7 @@ export async function performVote() {
 
         return {
           success: true,
+          roundTiming,
           details: {
             asset: 'N/A', strategy, round: newParsed?.roundId,
             note: `Round started, status: ${formatStatus(newParsed?.status)}. Will vote when calls open.`,
@@ -308,6 +314,7 @@ export async function performVote() {
       logger.info(`⏳ Cannot start: ${reason}`);
       return {
         success: true,
+        roundTiming,
         details: { asset: 'N/A', strategy, round: 'N/A', note: `Window closed: ${reason}` },
       };
     }
@@ -328,6 +335,7 @@ export async function performVote() {
 
         return {
           success: true,
+          roundTiming,
           details: {
             asset: 'N/A', strategy, round: newParsed?.roundId,
             note: `Round started (${formatStatus(newParsed?.status)}). Will vote when calls open.`,
@@ -338,13 +346,16 @@ export async function performVote() {
       logger.info('⏳ No round and cannot start one.');
       return {
         success: true,
+        roundTiming,
         details: { asset: 'N/A', strategy, round: 'N/A', note: 'No active round available' },
       };
     }
 
     // Step 6: LOCKED = selections are open!
     if (parsed.status === 'LOCKED') {
-      return doVoting(parsed, strategy);
+      const voteResult = await doVoting(parsed, strategy);
+      voteResult.roundTiming = roundTiming;
+      return voteResult;
     }
 
     // Unknown status

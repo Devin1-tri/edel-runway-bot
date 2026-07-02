@@ -33,6 +33,7 @@ async function voteCycle() {
   logger.info(`⏰ Vote cycle started at ${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}`);
 
   let lastError = null;
+  let roundTiming = null;
 
   for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
     logger.info(`🔄 Attempt ${attempt}/${config.maxRetries}`);
@@ -40,20 +41,25 @@ async function voteCycle() {
     try {
       const result = await performVote();
 
+      // Capture round timing for smart scheduling
+      if (result.roundTiming) {
+        roundTiming = result.roundTiming;
+      }
+
       if (result.success) {
         logger.info('🎉 Vote cycle completed successfully!');
 
         // Send Telegram notification based on result type
         if (result.details?.note?.includes('Already submitted')) {
           await notifyAlreadyVoted(result.details.note);
-          return 'already_voted';
+          return { status: 'already_voted', roundTiming };
         } else if (result.details?.note) {
           // Informational (waiting, no round, etc.)
           await notifyAlreadyVoted(result.details.note);
-          return 'waiting';
+          return { status: 'waiting', roundTiming };
         } else {
           await notifyVoteSuccess(result.details);
-          return 'voted';
+          return { status: 'voted', roundTiming };
         }
       }
 
@@ -76,15 +82,16 @@ async function voteCycle() {
           const retryResult = await performVote();
           if (retryResult.success && !retryResult.details?.note) {
             await notifyVoteSuccess(retryResult.details);
-            return 'voted';
+            return { status: 'voted', roundTiming: retryResult.roundTiming || roundTiming };
           } else if (retryResult.success) {
             await notifyAlreadyVoted(retryResult.details?.note || 'Retried after re-login');
-            return retryResult.details?.note?.includes('Already submitted') ? 'already_voted' : 'waiting';
+            const s = retryResult.details?.note?.includes('Already submitted') ? 'already_voted' : 'waiting';
+            return { status: s, roundTiming: retryResult.roundTiming || roundTiming };
           }
         }
 
         // Import failed or vote after import failed
-        return 'failed';
+        return { status: 'failed', roundTiming };
       }
 
       lastError = result.details?.error;
@@ -118,29 +125,48 @@ async function voteCycle() {
   }
 
   logger.error(`❌ All ${config.maxRetries} attempts failed. Last error: ${lastError}`);
-  return 'failed';
+  return { status: 'failed', roundTiming };
 }
 
 /**
  * Determine next delay (in ms) based on vote cycle result.
  *
- * - 'voted': full interval + buffer (default 62 min)
- *     → vote succeeded, wait 1 hour + 2 minutes for EDELx to unlock
- * - 'already_voted' / 'waiting': shorter retry (default 5 min)
+ * - 'voted': use round timing (nextRoundStartsAt + buffer)
+ *     → sync with actual round schedule instead of fixed interval
+ * - 'already_voted' / 'waiting': shorter retry (default 1 min)
  *     → not ready yet, try again shortly
- * - 'failed': shorter retry (default 5 min)
+ * - 'failed': shorter retry (default 1 min)
  *     → error, retry shortly
+ *
+ * @param {string} result - Vote cycle result
+ * @param {object|null} roundTiming - Round timing from API (contains nextRoundStartsAt)
  */
-function getNextDelay(result) {
+function getNextDelay(result, roundTiming = null) {
+  const retryMs = config.retryIntervalMinutes * 60 * 1000;
+
   switch (result) {
-    case 'voted':
+    case 'voted': {
+      // Try to sync with round timing
+      if (roundTiming?.nextRoundStartsAt) {
+        const nextRound = new Date(roundTiming.nextRoundStartsAt).getTime();
+        const bufferMs = config.voteBufferMinutes * 60 * 1000;
+        const delay = nextRound + bufferMs - Date.now();
+
+        if (delay > 0) {
+          logger.info(`📅 Syncing with round: next opens at ${new Date(nextRound).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}, voting in ${Math.round(delay / 60000)} min`);
+          return delay;
+        }
+      }
+
+      // Fallback: fixed interval if no timing data
+      logger.info('📅 No round timing available, using fixed interval');
       return (config.voteIntervalMinutes + config.voteBufferMinutes) * 60 * 1000;
+    }
     case 'already_voted':
     case 'waiting':
-      return config.retryIntervalMinutes * 60 * 1000;
     case 'failed':
     default:
-      return config.retryIntervalMinutes * 60 * 1000;
+      return retryMs;
   }
 }
 
@@ -182,8 +208,8 @@ function scheduleNextVote(delayMs) {
 
   nextVoteTimer = setTimeout(async () => {
     try {
-      const result = await voteCycle();
-      const nextDelay = getNextDelay(result);
+      const { status, roundTiming } = await voteCycle();
+      const nextDelay = getNextDelay(status, roundTiming);
       const scheduledTime = scheduleNextVote(nextDelay);
       await notifyNextVote(scheduledTime);
     } catch (err) {
@@ -226,10 +252,10 @@ export async function startScheduler() {
   await notifyBotStarted();
 
   logger.info('▶️  Running initial vote cycle...');
-  const result = await voteCycle();
+  const { status, roundTiming } = await voteCycle();
 
   // Schedule next vote dynamically based on result
-  const nextDelay = getNextDelay(result);
+  const nextDelay = getNextDelay(status, roundTiming);
   const nextTime = scheduleNextVote(nextDelay);
   await notifyNextVote(nextTime);
 
