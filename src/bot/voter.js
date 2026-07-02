@@ -159,8 +159,8 @@ function parseRoundData(data) {
       logger.info(`   ✅ Found ${fixtures.length} via deep search`);
       logger.info(`   ↳ First item keys: [${Object.keys(fixtures[0]).join(', ')}]`);
     } else {
-      // Dump first 2000 chars of response for debugging
-      logger.warn(`   ⚠️ No fixtures found! Full response: ${JSON.stringify(data).substring(0, 2000)}`);
+      // No fixtures — likely settlement pending or between rounds
+      logger.info('   ⏳ No fixtures available yet (settlement pending or between rounds)');
     }
   }
 
