@@ -154,6 +154,9 @@ async function voteCycle() {
 function getNextDelay(result, roundTiming = null) {
   const retryMs = config.retryIntervalMinutes * 60 * 1000;
 
+  // Debug: log what we received
+  logger.debug(`🔍 getNextDelay: result=${result}, roundTiming=${roundTiming ? JSON.stringify(roundTiming).substring(0, 200) : 'null'}`);
+
   switch (result) {
     case 'voted':
     case 'already_voted': {
@@ -174,7 +177,7 @@ function getNextDelay(result, roundTiming = null) {
       }
 
       // Fallback: fixed interval if no timing data
-      logger.info('📅 No round timing available, using fixed interval');
+      logger.info(`📅 No round timing available for '${result}', using fixed interval`);
       return (config.voteIntervalMinutes + config.voteBufferMinutes) * 60 * 1000;
     }
     case 'waiting':

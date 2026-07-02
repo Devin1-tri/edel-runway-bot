@@ -249,8 +249,19 @@ export async function performVote() {
       return { success: false, details: { error: 'Empty API response', strategy } };
     }
 
-    // Extract round timing for smart scheduling
-    const roundTiming = parsed.currentWindow?.timing || rawData?.currentWindow?.timing || null;
+    // Extract round timing for smart scheduling — check ALL possible locations
+    const roundTiming = parsed.currentWindow?.timing
+      || rawData?.currentWindow?.timing
+      || rawData?.timing
+      || parsed.raw?.currentWindow?.timing
+      || null;
+
+    // Debug round timing
+    if (roundTiming) {
+      logger.debug(`📅 Round timing: nextRoundStartsAt=${roundTiming.nextRoundStartsAt}, selectionClosesAt=${roundTiming.selectionClosesAt}`);
+    } else {
+      logger.debug('📅 No round timing found in API response');
+    }
 
     logger.info(`📊 Round status: ${formatStatus(parsed.status)}`);
     logger.info(`📋 Fixtures: ${parsed.fixtures.length}`);
