@@ -150,13 +150,15 @@ function getNextDelay(result, roundTiming = null) {
       // Both cases: we already voted this round → wait for next round
       if (roundTiming?.nextRoundStartsAt) {
         const nextRound = new Date(roundTiming.nextRoundStartsAt).getTime();
-        const bufferMs = config.voteBufferMinutes * 60 * 1000;
+        // Random buffer between +5 to +9 minutes to look human
+        const bufferMin = 5 + Math.floor(Math.random() * 5);
+        const bufferMs = bufferMin * 60 * 1000;
         const delay = nextRound + bufferMs - Date.now();
 
         if (delay > 0) {
-          const nextStr = new Date(nextRound).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+          const nextStr = new Date(nextRound + bufferMs).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
           const delayMin = Math.round(delay / 60000);
-          logger.info(`📅 Syncing with round: next opens at ${nextStr}, voting in ${delayMin} min`);
+          logger.info(`📅 Syncing with round: next opens at ${new Date(nextRound).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}, voting in ${delayMin} min (+${bufferMin} min buffer)`);
           return delay;
         }
       }
