@@ -258,9 +258,9 @@ export async function performVote() {
 
     // Debug round timing
     if (roundTiming) {
-      logger.debug(`📅 Round timing: nextRoundStartsAt=${roundTiming.nextRoundStartsAt}, selectionClosesAt=${roundTiming.selectionClosesAt}`);
+      logger.info(`📅 Round timing: nextRoundStartsAt=${roundTiming.nextRoundStartsAt}, selectionClosesAt=${roundTiming.selectionClosesAt}`);
     } else {
-      logger.debug('📅 No round timing found in API response');
+      logger.info('📅 No round timing found in API response');
     }
 
     logger.info(`📊 Round status: ${formatStatus(parsed.status)}`);

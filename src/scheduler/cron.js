@@ -154,8 +154,12 @@ async function voteCycle() {
 function getNextDelay(result, roundTiming = null) {
   const retryMs = config.retryIntervalMinutes * 60 * 1000;
 
-  // Debug: log what we received
-  logger.debug(`🔍 getNextDelay: result=${result}, roundTiming=${roundTiming ? JSON.stringify(roundTiming).substring(0, 200) : 'null'}`);
+  // Log: log what we received
+  if (roundTiming) {
+    logger.info(`📅 Round timing detected: nextRoundStartsAt=${roundTiming.nextRoundStartsAt}`);
+  } else {
+    logger.info(`📅 No round timing for '${result}' — will use fixed interval`);
+  }
 
   switch (result) {
     case 'voted':
