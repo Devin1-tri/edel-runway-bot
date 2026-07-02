@@ -51,10 +51,10 @@ const config = {
  * Validate required configuration
  */
 export function validateConfig() {
-  const validStrategies = ['random', 'smart', 'first', 'second'];
-  if (!validStrategies.includes(config.voteStrategy)) {
+  const validStrategies = ['random', 'smart', 'first', 'second', 'marketcap', 'popular', 'underdog'];
+  if (!validStrategies.includes(config.voteStrategy) && !config.voteStrategy.startsWith('pick-')) {
     throw new Error(
-      `Invalid VOTE_STRATEGY "${config.voteStrategy}". Must be one of: ${validStrategies.join(', ')}`
+      `Invalid VOTE_STRATEGY "${config.voteStrategy}". Must be one of: ${validStrategies.join(', ')} or pick-<TICKER>`
     );
   }
   return true;

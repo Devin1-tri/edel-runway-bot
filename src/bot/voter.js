@@ -13,6 +13,7 @@
 import config from '../utils/config.js';
 import logger, { logVote, logSeparator } from '../utils/logger.js';
 import { getCurrentRound, startRound, submitPicks, getAssets } from '../api/client.js';
+import { pickAsset, STRATEGIES } from './strategies.js';
 
 /**
  * Deep-search for a key in a nested object.
@@ -201,20 +202,13 @@ function selectTeam(teamAId, teamBId, assetMap, strategy) {
   const a = assetMap.get(teamAId);
   const b = assetMap.get(teamBId);
 
-  switch (strategy) {
-    case 'first':
-      return teamAId;
-    case 'second':
-      return teamBId;
-    case 'smart':
-    case 'random':
-    default: {
-      const pick = Math.random() < 0.5 ? teamAId : teamBId;
-      const picked = assetMap.get(pick);
-      logger.info(`   🎯 ${a?.ticker || 'A'} vs ${b?.ticker || 'B'} → ${picked?.ticker || pick}`);
-      return pick;
-    }
-  }
+  const selectedId = pickAsset(teamAId, teamBId, assetMap, strategy);
+  const picked = assetMap.get(selectedId);
+  const other = selectedId === teamAId ? b : a;
+  const strategyLabel = strategy.startsWith('pick-') ? strategy : strategy;
+  logger.info(`   🎯 ${a?.ticker || 'A'} vs ${b?.ticker || 'B'} → ${picked?.ticker || selectedId} [${strategyLabel}]`);
+
+  return selectedId;
 }
 
 /**
