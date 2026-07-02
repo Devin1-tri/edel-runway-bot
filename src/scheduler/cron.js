@@ -59,7 +59,7 @@ async function voteCycle() {
 
       // Check if session expired → try Telegram re-import
       if (result.details?.sessionExpired) {
-        logger.error('🔑 Session expired. Mencoba import via Telegram...');
+        logger.error('🔑 Session expired. Attempting import via Telegram...');
 
         // Only send notification once (avoid spam on retries)
         if (!sessionExpiredNotified) {
@@ -125,11 +125,11 @@ async function voteCycle() {
  * Determine next delay (in ms) based on vote cycle result.
  *
  * - 'voted': full interval + buffer (default 62 min)
- *     → vote berhasil, tunggu 1 jam + 2 menit agar EDELx unlock
+ *     → vote succeeded, wait 1 hour + 2 minutes for EDELx to unlock
  * - 'already_voted' / 'waiting': shorter retry (default 5 min)
- *     → belum siap, coba lagi sebentar lagi
+ *     → not ready yet, try again shortly
  * - 'failed': shorter retry (default 5 min)
- *     → error, coba lagi sebentar lagi
+ *     → error, retry shortly
  */
 function getNextDelay(result) {
   switch (result) {
@@ -203,8 +203,8 @@ function scheduleNextVote(delayMs) {
  * Flow:
  *   1. Run initial vote immediately
  *   2. Based on result, schedule next vote dynamically:
- *      - Vote sukses → 62 min (1 jam + 2 min buffer)
- *      - Belum siap  → 5 min retry
+ *      - Vote success → 62 min (1 hour + 2 min buffer)
+ *      - Not ready   → 5 min retry
  *   3. Repeat forever until bot stopped
  */
 export async function startScheduler() {
@@ -246,7 +246,7 @@ export async function startScheduler() {
       nextVoteTimer = null;
     }
     const time = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
-    await sendTelegram(`🛑 *BOT STOPPED*\n\n🕐 Waktu: ${time}`);
+    await sendTelegram(`🛑 *BOT STOPPED*\n\n🕐 Time: ${time}`);
     logger.info('👋 Goodbye!');
     process.exit(0);
   };

@@ -21,27 +21,27 @@ function printHelp() {
 Usage: node src/index.js <command>
 
 Commands:
-  import    ⭐ Import session dari Chrome DevTools
+  import    ⭐ Import session from Chrome DevTools
             Login di Chrome → F12 → Network → copy Cookie → paste.
 
   import-file <path>
-            Import session dari file JSON.
+            Import session from JSON file.
 
-  vote      Vote sekali saja (tanpa scheduling)
+  vote      Single vote (no scheduling)
 
-  start     Mulai bot scheduler (auto vote + dynamic scheduling)
-            Bot berjalan terus sampai dihentikan (Ctrl+C)
+  start     Start bot scheduler (auto vote + dynamic scheduling)
+            Runs continuously until stopped (Ctrl+C)
 
-  status    Cek status session dan konfigurasi
+  status    Check session and config status
 
   clear     Hapus session (force re-import)
 
-  help      Tampilkan bantuan ini
+  help      Show this help message
 
 NPM Shortcuts:
-  npm run import    → import session dari Chrome
-  npm run vote      → vote sekali
-  npm run start     → mulai bot scheduler
+  npm run import    → import session from Chrome
+  npm run vote      → single vote
+  npm run start     → start bot scheduler
 
 Workflow:
   1. Login di Chrome → F12 → Network → copy Cookie
@@ -49,7 +49,7 @@ Workflow:
   3. Di VPS: npm run vote (test)
   4. Di VPS: npm run start (jalankan bot)
 
-💡 Bot ini TIDAK butuh Chrome/browser di VPS!
+💡 This bot does NOT require Chrome/browser on the VPS!
 `);
 }
 
@@ -64,21 +64,21 @@ async function showStatus() {
   // Session status
   if (hasSession()) {
     const age = getSessionAge();
-    const ageStr = age !== null ? `${age.toFixed(1)} jam` : 'unknown';
+    const ageStr = age !== null ? `${age.toFixed(1)} hours` : 'unknown';
 
     // Test if session is actually valid
     logger.info('🔍 Testing session...');
     const valid = await checkSession();
 
     if (valid) {
-      logger.info(`✅ Session: Valid (umur: ${ageStr})`);
+      logger.info(`✅ Session: Valid (age: ${ageStr})`);
     } else {
-      logger.warn(`⚠️  Session: Expired/Invalid (umur: ${ageStr})`);
-      logger.info('   Jalankan "npm run import" untuk import ulang.');
+      logger.warn(`⚠️  Session: Expired/Invalid (age: ${ageStr})`);
+      logger.info('   Run "npm run import" to re-import.');
     }
   } else {
-    logger.error('❌ Session: Belum ada');
-    logger.info('   Jalankan "npm run import" untuk import dari Chrome.');
+    logger.error('❌ Session: Not found');
+    logger.info('   Run "npm run import" to import from Chrome.');
   }
 
   // Config
@@ -131,7 +131,7 @@ async function main() {
 
       case 'clear':
         clearSession();
-        logger.info('Session dihapus. Jalankan "npm run import" untuk import ulang.');
+        logger.info('Session cleared. Run "npm run import" to re-import.');
         break;
 
       case 'help':

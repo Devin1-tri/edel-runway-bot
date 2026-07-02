@@ -108,8 +108,8 @@ export async function waitForCookieViaTelegram(timeoutMinutes = 60) {
     return false;
   }
 
-  logger.info('📱 Menunggu cookie via Telegram...');
-  logger.info(`   Timeout: ${timeoutMinutes} menit`);
+  logger.info('📱 Waiting for cookie via Telegram...');
+  logger.info(`   Timeout: ${timeoutMinutes} minutes`);
 
   const startTime = Date.now();
   const timeoutMs = timeoutMinutes * 60 * 1000;
@@ -183,10 +183,10 @@ export async function waitForCookieViaTelegram(timeoutMinutes = 60) {
           [
             '✅ *SESSION UPDATED*',
             '',
-            `🍪 Cookie berhasil di-import via Telegram!`,
+            `🍪 Cookie imported successfully via Telegram!`,
             `📦 ${cookies.length} cookies saved`,
             '',
-            '▶️ Bot akan melanjutkan voting...',
+            '▶️ Bot will continue voting...',
           ].join('\n')
         );
 

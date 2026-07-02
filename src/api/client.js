@@ -66,7 +66,7 @@ async function apiFetch(path, options = {}) {
 
   // Check for auth redirect (session expired)
   if (res.status === 401 || res.status === 403) {
-    throw new Error('SESSION_EXPIRED: Cookie tidak valid lagi. Run: npm run import');
+    throw new Error('SESSION_EXPIRED: Cookie is no longer valid. Run: npm run import');
   }
 
   // Check for redirects to login

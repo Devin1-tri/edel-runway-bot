@@ -56,7 +56,7 @@ export async function notifyVoteSuccess(details = {}) {
     `🗳️ Asset: *${details.asset || 'N/A'}*`,
     `🎯 Strategy: \`${details.strategy || 'N/A'}\``,
     `📅 Round: ${details.round || 'N/A'}`,
-    `🕐 Waktu: ${time}`,
+    `🕐 Time: ${time}`,
     details.note ? `📝 Note: ${details.note}` : '',
   ].filter(Boolean).join('\n');
 
@@ -73,10 +73,10 @@ export async function notifyVoteFailed(details = {}) {
     '',
     `⚠️ Error: ${details.error || 'Unknown'}`,
     `🎯 Strategy: \`${details.strategy || 'N/A'}\``,
-    `🕐 Waktu: ${time}`,
+    `🕐 Time: ${time}`,
     `🔄 Attempt: ${details.attempt || '?'}/${details.maxAttempts || '?'}`,
     '',
-    details.willRetry ? '⏳ Akan retry...' : '🛑 Semua retry gagal.',
+    details.willRetry ? '⏳ Retrying...' : '🛑 All retries failed.',
   ].join('\n');
 
   return sendTelegram(msg);
@@ -89,20 +89,20 @@ export async function notifySessionExpired() {
   const msg = [
     '🔑 *SESSION EXPIRED*',
     '',
-    'Session login sudah expired.',
+    'Login session has expired.',
     '',
-    '*Cara update (langsung di sini):*',
-    '1. Buka Chrome → login https://runway.edel.finance',
-    '2. Tekan F12 → Network → Refresh halaman',
-    '3. Klik request pertama → cari header Cookie',
-    '4. Copy value cookie-nya',
-    '5. *Paste langsung di chat ini* ⬇️',
+    '*How to update (directly here):*',
+    '1. Open Chrome → login https://runway.edel.finance',
+    '2. Press F12 → Network → Refresh page',
+    '3. Click first request → find Cookie header',
+    '4. Copy the cookie value',
+    '5. *Paste directly in this chat* ⬇️',
     '',
-    '💡 Bisa paste format:',
+    '💡 You can paste:',
     '• `edel_session=eyJ...;cookie2=xxx`',
     '• atau JWT saja: `eyJhbGci...`',
     '',
-    '📱 Bot sedang menunggu cookie dari kamu...',
+    '📱 Bot is waiting for your cookie...',
   ].join('\n');
 
   return sendTelegram(msg);
@@ -119,10 +119,10 @@ export async function notifyBotStarted() {
     '',
     `🎯 Strategy: \`${config.voteStrategy}\``,
     `📅 Interval: ${config.voteIntervalMinutes} min + ${config.voteBufferMinutes} min buffer = ${totalMin} min`,
-    `🔄 Retry: setiap ${config.retryIntervalMinutes} min (jika belum siap)`,
+    `🔄 Retry: every ${config.retryIntervalMinutes} min (if not ready)`,
     `🕐 Started: ${time}`,
     '',
-    'Bot akan vote otomatis dengan dynamic scheduling.',
+    'Bot will vote automatically with dynamic scheduling.',
   ].join('\n');
 
   return sendTelegram(msg);
@@ -143,9 +143,9 @@ export async function notifyNextVote(nextTime) {
   const msg = [
     '⏰ *NEXT VOTE SCHEDULED*',
     '',
-    `🕐 Vote selanjutnya: ${nextStr}`,
-    `⏳ Dalam ${diffMin} menit`,
-    '📡 Bot tetap berjalan...',
+    `🕐 Next vote: ${nextStr}`,
+    `⏳ In ${diffMin} minutes`,
+    '📡 Bot continues running...',
   ].join('\n');
 
   return sendTelegram(msg, { silent: true });
@@ -157,12 +157,12 @@ export async function notifyNextVote(nextTime) {
 export async function notifyAlreadyVoted(message) {
   const time = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
   const msg = [
-    'ℹ️ *SUDAH VOTED*',
+    'ℹ️ *ALREADY VOTED*',
     '',
     `📝 Status: ${message || 'Already voted'}`,
-    `🕐 Waktu cek: ${time}`,
+    `🕐 Check time: ${time}`,
     '',
-    '⏰ Akan coba lagi di jadwal berikutnya.',
+    '⏰ Will retry at the next scheduled time.',
   ].join('\n');
 
   return sendTelegram(msg, { silent: true });

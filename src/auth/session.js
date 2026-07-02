@@ -161,19 +161,19 @@ export async function importSession() {
   console.log('║         🔐 IMPORT SESSION LOGIN                        ║');
   console.log('╚══════════════════════════════════════════════════════════╝');
   console.log('');
-  console.log('  Cara ambil Cookie dari Chrome:');
+  console.log('  How to get Cookie from Chrome:');
   console.log('');
-  console.log('  1. Buka Chrome → login ke https://runway.edel.finance');
-  console.log('  2. Setelah masuk, buka halaman /listing-calls');
-  console.log('  3. Tekan F12 (DevTools) → klik tab "Network"');
-  console.log('  4. Refresh halaman (Ctrl+R)');
-  console.log('  5. Klik request pertama di daftar');
-  console.log('  6. Di panel kanan, cari "Request Headers"');
-  console.log('  7. Cari baris "Cookie:"');
-  console.log('  8. Klik kanan pada value → Copy value');
-  console.log('  9. Paste di bawah ini (SEMUA, panjang gapapa)');
+  console.log('  1. Open Chrome → login to https://runway.edel.finance');
+  console.log('  2. Once logged in, open /listing-calls');
+  console.log('  3. Press F12 (DevTools) → click "Network" tab');
+  console.log('  4. Refresh the page (Ctrl+R)');
+  console.log('  5. Click the first request in the list');
+  console.log('  6. In the right panel, find "Request Headers"');
+  console.log('  7. Find the "Cookie:" line');
+  console.log('  8. Right-click the value → Copy value');
+  console.log('  9. Paste below (ALL of it, length is fine)');
   console.log('');
-  console.log('  Yang penting ada: edel_session=eyJ...');
+  console.log('  The important part is: edel_session=eyJ...');
   console.log('');
 
   const input = await ask('📋 Paste Cookie > ');
@@ -210,23 +210,23 @@ export async function importSession() {
   }
 
   if (cookies.length === 0) {
-    logger.error('❌ Gagal parse cookies.');
-    logger.info('   Format yang benar: name1=value1; name2=value2; ...');
-    logger.info('   Atau paste langsung token yang dimulai dengan eyJ...');
+    logger.error('❌ Failed to parse cookies.');
+    logger.info('   Correct format: name1=value1; name2=value2; ...');
+    logger.info('   Or paste the token directly starting with eyJ...');
     return false;
   }
 
   // Check if edel_session is present
   const hasEdel = cookies.some((c) => c.name === 'edel_session');
   if (!hasEdel) {
-    logger.warn('⚠️  Cookie "edel_session" tidak ditemukan!');
-    logger.warn('   Pastikan kamu sudah LOGIN dulu sebelum copy cookie.');
-    logger.warn('   Cookies yang ditemukan:');
+    logger.warn('⚠️  Cookie "edel_session" not found!');
+    logger.warn('   Make sure you are LOGGED IN before copying the cookie.');
+    logger.warn('   Cookies found:');
     cookies.forEach((c) => logger.warn(`     - ${c.name}`));
 
-    const proceed = await ask('Lanjutkan tanpa edel_session? [y/N] > ');
+    const proceed = await ask('Continue without edel_session? [y/N] > ');
     if (proceed.toLowerCase() !== 'y') {
-      logger.info('Dibatalkan. Login dulu, lalu coba lagi.');
+      logger.info('Cancelled. Login first, then try again.');
       return false;
     }
   }
@@ -236,15 +236,15 @@ export async function importSession() {
   saveSessionRaw(state);
 
   console.log('');
-  logger.info('✅ Session berhasil di-import!');
+  logger.info('✅ Session imported successfully!');
   logger.info(`   🍪 ${cookies.length} cookies saved`);
   if (hasEdel) {
     logger.info('   🔑 edel_session ✓ (JWT token found)');
   }
   console.log('');
-  logger.info('Sekarang jalankan:');
-  logger.info('   npm run vote    → test vote sekali');
-  logger.info('   npm run start   → mulai bot scheduler');
+  logger.info('Now run:');
+  logger.info('   npm run vote    → test single vote');
+  logger.info('   npm run start   → start bot scheduler');
   return true;
 }
 
@@ -255,7 +255,7 @@ export function importSessionFromFile(filePath) {
   const absPath = path.resolve(filePath);
 
   if (!fs.existsSync(absPath)) {
-    logger.error(`❌ File tidak ditemukan: ${absPath}`);
+    logger.error(`❌ File not found: ${absPath}`);
     return false;
   }
 
@@ -264,7 +264,7 @@ export function importSessionFromFile(filePath) {
     const state = JSON.parse(data);
 
     if (!state.cookies || !state.origins) {
-      logger.error('❌ Format file tidak valid. Harus punya "cookies" dan "origins".');
+      logger.error('❌ Invalid file format. Must have "cookies" and "origins".');
       return false;
     }
 
@@ -273,7 +273,7 @@ export function importSessionFromFile(filePath) {
     const cookieCount = state.cookies.length;
     const lsCount = state.origins[0]?.localStorage?.length || 0;
 
-    logger.info('✅ Session berhasil di-import dari file!');
+    logger.info('✅ Session imported successfully from file!');
     logger.info(`   🍪 ${cookieCount} cookies, 📦 ${lsCount} localStorage items`);
     return true;
   } catch (err) {
