@@ -114,7 +114,10 @@ function drawHeader() {
 export function initDisplay(opts = {}) {
   _strategy = opts.strategy || 'smart';
   _interval = opts.interval || '65';
-  _isInteractive = process.stdout.isTTY === true;
+
+  // Force simple mode if SIMPLE_DISPLAY=true or not a TTY
+  const forceSimple = process.env.SIMPLE_DISPLAY === 'true';
+  _isInteractive = process.stdout.isTTY === true && !forceSimple;
 
   if (!_isInteractive) {
     // Not a terminal (PM2 log, pipe, etc.) — just print a simple banner
