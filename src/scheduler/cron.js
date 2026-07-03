@@ -51,11 +51,10 @@ async function voteCycle() {
 
         // Send Telegram notification based on result type
         if (result.details?.note?.includes('Already submitted')) {
-          await notifyAlreadyVoted(result.details.note);
+          // Silent — already submitted is normal, no Telegram notification
           return { status: 'already_voted', roundTiming };
         } else if (result.details?.note) {
-          // Informational (waiting, no round, etc.)
-          await notifyAlreadyVoted(result.details.note);
+          // Informational (waiting, no round, etc.) — silent
           return { status: 'waiting', roundTiming };
         } else {
           await notifyVoteSuccess(result.details);
@@ -84,7 +83,7 @@ async function voteCycle() {
             await notifyVoteSuccess(retryResult.details);
             return { status: 'voted', roundTiming: retryResult.roundTiming || roundTiming };
           } else if (retryResult.success) {
-            await notifyAlreadyVoted(retryResult.details?.note || 'Retried after re-login');
+            // Silent — already submitted or waiting, no Telegram notification
             const s = retryResult.details?.note?.includes('Already submitted') ? 'already_voted' : 'waiting';
             return { status: s, roundTiming: retryResult.roundTiming || roundTiming };
           }
