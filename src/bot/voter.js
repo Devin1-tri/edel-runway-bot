@@ -407,26 +407,12 @@ async function waitForLock(sessionFile, maxWaitSeconds = 120) {
 
   while (Date.now() - startTime < maxWaitMs) {
     try {
-      // Build cookie from session file
-      let cookie = '';
-      if (sessionFile && fs.existsSync(sessionFile)) {
-        const session = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
-        cookie = session.cookies?.map(c => `${c.name}=${c.value}`).join('; ') || '';
-      }
-
-      // Fetch with 8s timeout to prevent hanging
-      const res = await fetch(`${config.baseUrl}/listing-round`, {
-        headers: { 'accept': 'application/json', cookie },
-        signal: AbortSignal.timeout(8000),
-      });
-
-      if (!res.ok) {
-        logger.info(`⏳ Lock check: HTTP ${res.status}, retrying...`);
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-        continue;
-      }
-
-      const data = await res.json();
+      // Use the existing API client (handles auth correctly)
+      // Wrap with timeout to prevent hanging on slow API
+      const data = await Promise.race([
+        getCurrentRound(sessionFile),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Poll timeout')), 10000)),
+      ]);
       const round = data?.round;
 
       if (!round) {
