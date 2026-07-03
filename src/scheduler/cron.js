@@ -13,8 +13,8 @@ import {
   sendTelegram,
 } from '../utils/telegram.js';
 
-// Track whether we already sent a session-expired notification
-// to avoid spamming the user on every retry
+// Track last notified state to avoid spam
+let lastNotifiedState = null;
 let sessionExpiredNotified = false;
 
 // Track active timer for graceful shutdown
@@ -231,15 +231,26 @@ function scheduleNextVote(delayMs) {
       const { status, roundTiming } = await voteCycle();
       const nextDelay = getNextDelay(status, roundTiming);
       const scheduledTime = scheduleNextVote(nextDelay);
-      // Only notify Telegram for meaningful schedules (not retry spam)
-      if (status === 'voted' || status === 'already_voted') {
+
+      // Smart notification: only notify on state change or meaningful events
+      if (status === 'voted') {
+        // Always notify on successful vote
         await notifyNextVote(scheduledTime);
+        lastNotifiedState = 'voted';
+      } else if (status === 'already_voted' && lastNotifiedState !== 'already_voted') {
+        // Notify once when entering already-voted state, then silent
+        await notifyNextVote(scheduledTime);
+        lastNotifiedState = 'already_voted';
+      } else if (status === 'waiting' && lastNotifiedState !== 'waiting') {
+        // Notify once when entering waiting state (between rounds), then silent
+        await sendTelegram(`⏳ *BETWEEN ROUNDS*\n\nCalls are being prepared. Bot will auto-vote when ready.`);
+        lastNotifiedState = 'waiting';
       }
+      // failed/errors already handled by notifyVoteFailed in voteCycle
     } catch (err) {
       logger.error(`Scheduled vote cycle error: ${err.message}`);
       const retryDelay = config.retryIntervalMinutes * 60 * 1000;
-      const scheduledTime = scheduleNextVote(retryDelay);
-      // Don't spam Telegram on errors — log is enough
+      scheduleNextVote(retryDelay);
     }
   }, delayMs);
 
