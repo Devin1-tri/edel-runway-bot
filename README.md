@@ -6,9 +6,10 @@ Fork of [AaBatok/Edel](https://github.com/AaBatok/Edel) with additional voting s
 
 ## ✨ Features
 
+- **Multi-Account** — run 3-5 accounts sequentially (no collision, no missed rounds)
 - **Auto Vote** every round (syncs with round window automatically)
 - **Smart Scheduling** — waits for next round to open + random 5-9 min buffer (no fixed interval)
-- **Multiple Voting Strategies** — marketcap, popular, underdog, or always-pick-a-ticker
+- **Multiple Voting Strategies** — marketcap, popular, underdog, demand, or always-pick-a-ticker
 - **Telegram Notifications** — real-time alerts on vote success/failure
 - **Session Import** — login in Chrome, copy cookie, paste on VPS
 - **Retry Logic** — auto retry with exponential backoff
@@ -101,6 +102,59 @@ npm run import          # Paste new cookie
 npm run start           # Restart
 # Ctrl+A then D         # Detach
 ```
+
+---
+
+## 👥 Multi-Account
+
+Run multiple Edel accounts from a single bot. Votes are sequential (no collision).
+
+### Setup
+
+```bash
+# Add accounts
+node src/index.js add-account A1 "Main Account"
+node src/index.js add-account A2 "Second Account"
+node src/index.js add-account A3 "Third Account"
+
+# List accounts
+node src/index.js accounts
+```
+
+### Import Session per Account
+
+Each account needs its own session cookie. Copy the cookie from Chrome and save:
+
+```bash
+# For A1: save session to sessions/A1.json
+# For A2: save session to sessions/A2.json
+# etc.
+```
+
+### Vote Flow
+
+```
+Round opens → +5-9 min (random buffer)
+→ Account A1 votes → 1 min delay
+→ Account A2 votes → 1 min delay
+→ Account A3 votes
+→ All done → sync with next round
+```
+
+**Total time:** ~10-14 min for 3 accounts, ~14-18 min for 5 accounts.
+
+### Account Management
+
+```bash
+node src/index.js accounts          # List all accounts
+node src/index.js disable A2        # Disable an account
+node src/index.js enable A2         # Re-enable
+node src/index.js remove-account A3 # Remove permanently
+```
+
+### Migration from Single Account
+
+If you have an existing `sessions/state.json`, the bot automatically migrates it to `A1` on first run.
 
 ---
 
@@ -214,23 +268,27 @@ edel-runway-bot/
 ├── package.json
 ├── .env                    # Config (DO NOT COMMIT!)
 ├── .env.example            # Config template
-├── ecosystem.config.cjs    # PM2 config (optional)
+├── accounts.json           # Multi-account registry (auto-generated)
 ├── src/
 │   ├── index.js            # CLI entry point
+│   ├── accounts/
+│   │   └── manager.js      # Multi-account CRUD
 │   ├── api/
-│   │   └── client.js       # HTTP API client
+│   │   └── client.js       # HTTP API client (per-account session)
 │   ├── auth/
-│   │   └── session.js      # Cookie import/export
+│   │   ├── session.js      # Cookie import/export
+│   │   └── telegram-import.js
 │   ├── bot/
 │   │   ├── voter.js        # Voting logic
 │   │   └── strategies.js   # Voting strategies
 │   ├── scheduler/
-│   │   └── cron.js         # Cron scheduler + Telegram
+│   │   └── cron.js         # Sequential multi-account scheduler
 │   └── utils/
 │       ├── config.js       # Config loader
+│       ├── display.js      # TUI display
 │       ├── logger.js       # Winston logger
 │       └── telegram.js     # Telegram notifications
-├── sessions/               # Cookie session (DO NOT COMMIT!)
+├── sessions/               # Per-account session files (A1.json, A2.json, ...)
 └── logs/                   # Log files
 ```
 

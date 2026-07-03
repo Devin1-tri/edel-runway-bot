@@ -1,3 +1,18 @@
+/**
+ * Multi-account sequential vote scheduler.
+ *
+ * Flow:
+ *   1. Wait for round to open + random buffer (+5-9 min)
+ *   2. Vote for each enabled account sequentially:
+ *      - Account 1 → vote (max 3 retries)
+ *      - Wait 1 min
+ *      - Account 2 → vote (max 3 retries)
+ *      - Wait 1 min
+ *      - Account 3 → vote (max 3 retries)
+ *      - ... etc
+ *   3. After all accounts done, sync with next round window
+ *   4. Repeat forever
+ */
 import config from '../utils/config.js';
 import logger, { logSeparator } from '../utils/logger.js';
 import { performVote } from '../bot/voter.js';
@@ -9,9 +24,14 @@ import {
   notifySessionExpired,
   notifyBotStarted,
   notifyNextVote,
-  notifyAlreadyVoted,
   sendTelegram,
 } from '../utils/telegram.js';
+import {
+  getEnabledAccounts,
+  getAccountCount,
+  updateAccountStatus,
+  initDefaultAccount,
+} from '../accounts/manager.js';
 
 // Track last notified state to avoid spam
 let lastNotifiedState = null;
@@ -20,88 +40,70 @@ let sessionExpiredNotified = false;
 // Track active timer for graceful shutdown
 let nextVoteTimer = null;
 
+// Delay between accounts (ms)
+const ACCOUNT_DELAY_MS = 1 * 60 * 1000; // 1 minute
+
 /**
- * Execute a single vote cycle with retry logic.
- * Returns a status string for scheduling decisions:
- *   'voted'         → successful vote
- *   'already_voted' → already submitted for this round
- *   'waiting'       → no round available / allocation pending
- *   'failed'        → error / session expired
+ * Vote for a single account with retry logic.
+ * Returns { status, roundTiming, accountId }
  */
-async function voteCycle() {
-  logSeparator();
-  logger.info(`⏰ Vote cycle started at ${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}`);
+async function voteForAccount(account) {
+  const accountId = account.id;
+  const tag = `[${accountId}] `;
+
+  logger.info(`${tag}🔄 Starting vote...`);
+  updateAccountStatus(accountId, { lastVote: new Date().toISOString(), lastVoteStatus: 'running' });
 
   let lastError = null;
   let roundTiming = null;
 
   for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
-    logger.info(`🔄 Attempt ${attempt}/${config.maxRetries}`);
+    logger.info(`${tag}🔄 Attempt ${attempt}/${config.maxRetries}`);
 
     try {
-      const result = await performVote();
+      const result = await performVote({ id: accountId, sessionFile: account.sessionFile });
 
-      // Capture round timing for smart scheduling
       if (result.roundTiming) {
         roundTiming = result.roundTiming;
       }
 
       if (result.success) {
-        logger.info('🎉 Vote cycle completed successfully!');
-
-        // Send Telegram notification based on result type
         if (result.details?.note?.includes('Already submitted')) {
-          // Silent — already submitted is normal, no Telegram notification
-          return { status: 'already_voted', roundTiming };
+          logger.info(`${tag}✅ Already submitted for this round.`);
+          updateAccountStatus(accountId, { lastVoteStatus: 'already_voted' });
+          return { status: 'already_voted', roundTiming, accountId };
         } else if (result.details?.note) {
-          // Informational (waiting, no round, etc.) — silent
-          return { status: 'waiting', roundTiming };
+          logger.info(`${tag}⏳ ${result.details.note}`);
+          updateAccountStatus(accountId, { lastVoteStatus: 'waiting' });
+          return { status: 'waiting', roundTiming, accountId };
         } else {
-          await notifyVoteSuccess(result.details);
-          return { status: 'voted', roundTiming };
+          logger.info(`${tag}🎉 Vote success!`);
+          updateAccountStatus(accountId, { lastVoteStatus: 'voted' });
+          await notifyVoteSuccess({ ...result.details, accountId });
+          return { status: 'voted', roundTiming, accountId };
         }
       }
 
-      // Check if session expired → try Telegram re-import
+      // Session expired
       if (result.details?.sessionExpired) {
-        logger.error('🔑 Session expired. Attempting import via Telegram...');
-
-        // Only send notification once (avoid spam on retries)
+        logger.error(`${tag}🔑 Session expired.`);
         if (!sessionExpiredNotified) {
           sessionExpiredNotified = true;
           await notifySessionExpired();
         }
-
-        // Wait for user to paste cookie in Telegram (up to 60 min)
-        const imported = await waitForCookieViaTelegram(60);
-        if (imported) {
-          logger.info('🔄 Session refreshed via Telegram! Retrying vote...');
-          sessionExpiredNotified = false;
-          // Retry the vote with fresh session
-          const retryResult = await performVote();
-          if (retryResult.success && !retryResult.details?.note) {
-            await notifyVoteSuccess(retryResult.details);
-            return { status: 'voted', roundTiming: retryResult.roundTiming || roundTiming };
-          } else if (retryResult.success) {
-            // Silent — already submitted or waiting, no Telegram notification
-            const s = retryResult.details?.note?.includes('Already submitted') ? 'already_voted' : 'waiting';
-            return { status: s, roundTiming: retryResult.roundTiming || roundTiming };
-          }
-        }
-
-        // Import failed or vote after import failed
-        return { status: 'failed', roundTiming };
+        updateAccountStatus(accountId, { lastVoteStatus: 'failed' });
+        return { status: 'failed', roundTiming, accountId, sessionExpired: true };
       }
 
       lastError = result.details?.error;
-      // Simplify error for log — strip HTML
       const shortError = (lastError || '').includes('502') || (lastError || '').includes('504')
         ? 'Server timeout (502/504)'
         : (lastError || '').substring(0, 100);
-      logger.warn(`⚠️  Attempt ${attempt}/${config.maxRetries} failed: ${shortError}`);
+      logger.warn(`${tag}⚠️  Attempt ${attempt}/${config.maxRetries} failed: ${shortError}`);
 
       await notifyVoteFailed({
         ...result.details,
+        accountId,
         attempt,
         maxAttempts: config.maxRetries,
         willRetry: attempt < config.maxRetries,
@@ -111,10 +113,11 @@ async function voteCycle() {
       const shortCrash = (lastError || '').includes('502') || (lastError || '').includes('504')
         ? 'Server timeout (502/504)'
         : (lastError || '').substring(0, 100);
-      logger.error(`💥 Attempt ${attempt}/${config.maxRetries} crashed: ${shortCrash}`);
+      logger.error(`${tag}💥 Attempt ${attempt}/${config.maxRetries} crashed: ${shortCrash}`);
 
       await notifyVoteFailed({
         error: err.message,
+        accountId,
         strategy: config.voteStrategy,
         attempt,
         maxAttempts: config.maxRetries,
@@ -122,10 +125,9 @@ async function voteCycle() {
       });
     }
 
-    // Wait before retry (exponential backoff)
     if (attempt < config.maxRetries) {
       const delay = config.retryDelay * attempt;
-      logger.info(`⏳ Waiting ${delay / 1000}s before retry...`);
+      logger.info(`${tag}⏳ Waiting ${delay / 1000}s before retry...`);
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
@@ -133,27 +135,73 @@ async function voteCycle() {
   const shortFinal = (lastError || '').includes('502') || (lastError || '').includes('504')
     ? 'Server timeout (502/504)'
     : (lastError || '').substring(0, 100);
-  logger.error(`❌ All ${config.maxRetries} attempts failed: ${shortFinal}`);
-  return { status: 'failed', roundTiming };
+  logger.error(`${tag}❌ All ${config.maxRetries} attempts failed: ${shortFinal}`);
+  updateAccountStatus(accountId, { lastVoteStatus: 'failed' });
+  return { status: 'failed', roundTiming, accountId };
+}
+
+/**
+ * Vote for all enabled accounts sequentially.
+ * Returns { overallStatus, roundTiming }
+ */
+async function voteAllAccounts() {
+  const accounts = getEnabledAccounts();
+
+  if (accounts.length === 0) {
+    logger.warn('⚠️  No enabled accounts. Add accounts with: npm run add-account');
+    return { overallStatus: 'failed', roundTiming: null };
+  }
+
+  logger.info(`👥 Voting for ${accounts.length} account(s)...`);
+
+  let overallStatus = 'waiting';
+  let roundTiming = null;
+  const results = [];
+
+  for (let i = 0; i < accounts.length; i++) {
+    const account = accounts[i];
+
+    if (i > 0) {
+      // Delay between accounts (except before first)
+      logger.info(`⏳ Waiting 1 min before next account...`);
+      await new Promise((resolve) => setTimeout(resolve, ACCOUNT_DELAY_MS));
+    }
+
+    const result = await voteForAccount(account);
+    results.push(result);
+
+    // Capture round timing from any account
+    if (result.roundTiming) {
+      roundTiming = result.roundTiming;
+    }
+
+    // Track overall status
+    if (result.status === 'voted') {
+      overallStatus = 'voted';
+    } else if (result.status === 'already_voted' && overallStatus !== 'voted') {
+      overallStatus = 'already_voted';
+    } else if (result.status === 'failed' && overallStatus === 'waiting') {
+      overallStatus = 'failed';
+    }
+  }
+
+  // Summary log
+  logSeparator();
+  logger.info(`📊 Voting summary:`);
+  for (const r of results) {
+    const icon = r.status === 'voted' ? '✅' : r.status === 'already_voted' ? 'ℹ️' : '❌';
+    logger.info(`   ${icon} ${r.accountId}: ${r.status}`);
+  }
+
+  return { overallStatus, roundTiming };
 }
 
 /**
  * Determine next delay (in ms) based on vote cycle result.
- *
- * - 'voted': use round timing (nextRoundStartsAt + buffer)
- *     → sync with actual round schedule instead of fixed interval
- * - 'already_voted' / 'waiting': shorter retry (default 1 min)
- *     → not ready yet, try again shortly
- * - 'failed': shorter retry (default 1 min)
- *     → error, retry shortly
- *
- * @param {string} result - Vote cycle result
- * @param {object|null} roundTiming - Round timing from API (contains nextRoundStartsAt)
  */
 function getNextDelay(result, roundTiming = null) {
   const retryMs = config.retryIntervalMinutes * 60 * 1000;
 
-  // Log: log what we received
   if (roundTiming) {
     logger.info(`📅 Round timing detected: nextRoundStartsAt=${roundTiming.nextRoundStartsAt}`);
   } else {
@@ -163,10 +211,8 @@ function getNextDelay(result, roundTiming = null) {
   switch (result) {
     case 'voted':
     case 'already_voted': {
-      // Both cases: we already voted this round → wait for next round
       if (roundTiming?.nextRoundStartsAt) {
         const nextRound = new Date(roundTiming.nextRoundStartsAt).getTime();
-        // Random buffer between +5 to +9 minutes to look human
         const bufferMin = 5 + Math.floor(Math.random() * 5);
         const bufferMs = bufferMin * 60 * 1000;
         const delay = nextRound + bufferMs - Date.now();
@@ -179,7 +225,6 @@ function getNextDelay(result, roundTiming = null) {
         }
       }
 
-      // Fallback: fixed interval if no timing data
       logger.info(`📅 No round timing available for '${result}', using fixed interval`);
       return (config.voteIntervalMinutes + config.voteBufferMinutes) * 60 * 1000;
     }
@@ -191,15 +236,7 @@ function getNextDelay(result, roundTiming = null) {
 }
 
 /**
- * Schedule the next vote using dynamic setTimeout.
- *
- * Unlike fixed cron which runs at XX:00 every hour,
- * this schedules relative to the LAST vote time.
- *
- * Example: vote at 22:37 → next at 23:39 (62 min later)
- *
- * @param {number} delayMs - Delay in milliseconds until next vote
- * @returns {Date} The scheduled next vote time
+ * Schedule the next vote cycle.
  */
 function scheduleNextVote(delayMs) {
   if (nextVoteTimer) {
@@ -211,7 +248,6 @@ function scheduleNextVote(delayMs) {
   const nextStr = nextTime.toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
   const delayMin = Math.round(delayMs / 60000);
 
-  // Update TUI header with next vote info
   const nextHHmm = nextTime.toLocaleString('id-ID', {
     timeZone: 'Asia/Jakarta',
     hour: '2-digit',
@@ -228,25 +264,21 @@ function scheduleNextVote(delayMs) {
 
   nextVoteTimer = setTimeout(async () => {
     try {
-      const { status, roundTiming } = await voteCycle();
-      const nextDelay = getNextDelay(status, roundTiming);
+      const { overallStatus, roundTiming } = await voteAllAccounts();
+      const nextDelay = getNextDelay(overallStatus, roundTiming);
       const scheduledTime = scheduleNextVote(nextDelay);
 
-      // Smart notification: only notify on state change or meaningful events
-      if (status === 'voted') {
-        // Always notify on successful vote
+      // Smart notification: only notify on state change
+      if (overallStatus === 'voted') {
         await notifyNextVote(scheduledTime);
         lastNotifiedState = 'voted';
-      } else if (status === 'already_voted' && lastNotifiedState !== 'already_voted') {
-        // Notify once when entering already-voted state, then silent
+      } else if (overallStatus === 'already_voted' && lastNotifiedState !== 'already_voted') {
         await notifyNextVote(scheduledTime);
         lastNotifiedState = 'already_voted';
-      } else if (status === 'waiting' && lastNotifiedState !== 'waiting') {
-        // Notify once when entering waiting state (between rounds), then silent
+      } else if (overallStatus === 'waiting' && lastNotifiedState !== 'waiting') {
         await sendTelegram(`⏳ *BETWEEN ROUNDS*\n\nCalls are being prepared. Bot will auto-vote when ready.`);
         lastNotifiedState = 'waiting';
       }
-      // failed/errors already handled by notifyVoteFailed in voteCycle
     } catch (err) {
       logger.error(`Scheduled vote cycle error: ${err.message}`);
       const retryDelay = config.retryIntervalMinutes * 60 * 1000;
@@ -259,44 +291,37 @@ function scheduleNextVote(delayMs) {
 
 /**
  * Start the dynamic vote scheduler.
- *
- * Flow:
- *   1. Run initial vote immediately
- *   2. Based on result, schedule next vote dynamically:
- *      - Vote success → 62 min (1 hour + 2 min buffer)
- *      - Not ready   → 5 min retry
- *   3. Repeat forever until bot stopped
  */
 export async function startScheduler() {
-  const totalMin = config.voteIntervalMinutes + config.voteBufferMinutes;
+  // Migrate single-account to multi-account if needed
+  initDefaultAccount();
 
-  // Initialize TUI with sticky header
+  const accountCount = getAccountCount();
+
   initDisplay({
     strategy: config.voteStrategy,
-    interval: String(totalMin),
+    interval: 'auto',
   });
 
+  logger.info(`👥 Accounts  : ${accountCount} configured`);
   logger.info(`📅 Scheduling: syncs with round window + random +5-9 min buffer`);
-  logger.info(`🔄 Retry    : every ${config.retryIntervalMinutes}m`);
-  logger.info(`🎯 Strategy : ${config.voteStrategy}`);
-  logger.info(`📨 Telegram : ${config.telegramBotToken ? 'Configured ✅' : 'Not configured ⚠️'}`);
+  logger.info(`🔄 Retry     : every ${config.retryIntervalMinutes}m`);
+  logger.info(`🎯 Strategy  : ${config.voteStrategy}`);
+  logger.info(`📨 Telegram  : ${config.telegramBotToken ? 'Configured ✅' : 'Not configured ⚠️'}`);
   logger.info('');
 
-  // Send Telegram notification that bot started
   await notifyBotStarted();
 
   logger.info('▶️  Running initial vote cycle...');
-  const { status, roundTiming } = await voteCycle();
+  const { overallStatus, roundTiming } = await voteAllAccounts();
 
-  // Schedule next vote dynamically based on result
-  const nextDelay = getNextDelay(status, roundTiming);
+  const nextDelay = getNextDelay(overallStatus, roundTiming);
   const nextTime = scheduleNextVote(nextDelay);
   await notifyNextVote(nextTime);
 
   logger.info('');
   logger.info('📡 Bot is running with dynamic scheduling...');
 
-  // Handle graceful shutdown
   const shutdown = async () => {
     logger.info('');
     logger.info('🛑 Bot stopping...');
@@ -316,11 +341,11 @@ export async function startScheduler() {
 }
 
 /**
- * Run a single vote (no scheduling)
+ * Run a single vote for all accounts (no scheduling)
  */
 export async function runSingleVote() {
   logSeparator();
-  logger.info('🗳️  Running single vote...');
-  await voteCycle();
+  logger.info('🗳️  Running single vote for all accounts...');
+  await voteAllAccounts();
   logger.info('✅ Single vote cycle complete.');
 }

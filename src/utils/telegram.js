@@ -50,9 +50,11 @@ export async function sendTelegram(text, { silent = false } = {}) {
  */
 export async function notifyVoteSuccess(details = {}) {
   const time = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+  const accTag = details.accountId ? `👤 Account: *${details.accountId}*\n` : '';
   const msg = [
     '✅ *VOTE BERHASIL*',
     '',
+    accTag,
     `🗳️ Asset: *${details.asset || 'N/A'}*`,
     `🎯 Strategy: \`${details.strategy || 'N/A'}\``,
     `📅 Round: ${details.round || 'N/A'}`,
@@ -68,6 +70,7 @@ export async function notifyVoteSuccess(details = {}) {
  */
 export async function notifyVoteFailed(details = {}) {
   const time = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+  const accTag = details.accountId ? `👤 Account: *${details.accountId}*\n` : '';
 
   // Clean up error message — strip HTML and keep it short
   let errorMsg = details.error || 'Unknown';
@@ -80,13 +83,14 @@ export async function notifyVoteFailed(details = {}) {
   const msg = [
     '❌ *VOTE FAILED*',
     '',
+    accTag,
     `⚠️ ${errorMsg}`,
     `🎯 Strategy: \`${details.strategy || 'N/A'}\``,
     `🕐 Time: ${time}`,
     `🔄 Attempt: ${details.attempt || '?'}/${details.maxAttempts || '?'}`,
     '',
     details.willRetry ? '⏳ Retrying...' : '🛑 All retries failed.',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   return sendTelegram(msg);
 }

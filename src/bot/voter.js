@@ -230,16 +230,19 @@ function formatStatus(status) {
 
 /**
  * Main voting function — pure HTTP, no browser
+ * @param {object} [account] - { id, sessionFile } for multi-account mode
  */
-export async function performVote() {
+export async function performVote(account = null) {
   const strategy = config.voteStrategy;
+  const tag = account ? `[${account.id}] ` : '';
+  const sessionFile = account?.sessionFile || null;
   logSeparator();
-  logger.info(`🗳️  Starting vote | Strategy: ${strategy}`);
+  logger.info(`${tag}🗳️  Starting vote | Strategy: ${strategy}`);
 
   try {
     // Step 1: Get current round
-    logger.info('📡 Fetching current round...');
-    const rawData = await getCurrentRound();
+    logger.info(`${tag}📡 Fetching current round...`);
+    const rawData = await getCurrentRound(sessionFile);
 
     // Debug: log raw response structure
     logger.debug(`🔍 Raw response: ${JSON.stringify(rawData).substring(0, 500)}`);
@@ -303,7 +306,7 @@ export async function performVote() {
       const startAction = parsed.actions?.startRound || parsed.actions?.prepareRound;
       if (startAction?.enabled !== false) {
         logger.info('🚀 Starting new listing round...');
-        const startResult = await startRound();
+        const startResult = await startRound(sessionFile);
         logger.debug(`🔍 Start result: ${JSON.stringify(startResult).substring(0, 500)}`);
         const newParsed = parseRoundData(startResult);
         logger.info(`✅ New round: ${formatStatus(newParsed?.status)}`);
@@ -337,7 +340,7 @@ export async function performVote() {
       const startAction = parsed.actions?.startRound || parsed.actions?.prepareRound;
       if (startAction?.enabled !== false) {
         logger.info('🚀 No active round. Starting new one...');
-        const startResult = await startRound();
+        const startResult = await startRound(sessionFile);
         logger.debug(`🔍 Start result: ${JSON.stringify(startResult).substring(0, 500)}`);
         const newParsed = parseRoundData(startResult);
         logger.info(`✅ New round: ${formatStatus(newParsed?.status)}`);
@@ -366,7 +369,7 @@ export async function performVote() {
 
     // Step 6: LOCKED = selections are open!
     if (parsed.status === 'LOCKED') {
-      const voteResult = await doVoting(parsed, strategy);
+      const voteResult = await doVoting(parsed, strategy, sessionFile, tag);
       voteResult.roundTiming = roundTiming;
       return voteResult;
     }
@@ -387,14 +390,14 @@ export async function performVote() {
 /**
  * Actually perform voting on open fixtures
  */
-async function doVoting(parsed, strategy) {
+async function doVoting(parsed, strategy, sessionFile = null, tag = '') {
   const { roundId, fixtures, isPreview } = parsed;
   logger.info(`✅ Calls are OPEN! ${fixtures.length} head-to-head fixtures`);
 
   // Load assets for display
   let assetMap = new Map();
   try {
-    const assets = await getAssets();
+    const assets = await getAssets(sessionFile);
     assetMap = new Map(assets.map((a) => [a.id || a.assetId, a]));
     logger.debug(`📦 Loaded ${assetMap.size} assets`);
   } catch (err) {
@@ -432,7 +435,7 @@ async function doVoting(parsed, strategy) {
 
   // Submit all picks
   logger.info(`📤 Submitting ${picks.length} picks for round ${roundId}...`);
-  const result = await submitPicks(roundId, picks, { isPreview });
+  const result = await submitPicks(roundId, picks, { isPreview, sessionFile });
 
   const newParsed = parseRoundData(result);
   logger.info(`✅ Picks submitted! Status: ${formatStatus(newParsed?.status)}`);

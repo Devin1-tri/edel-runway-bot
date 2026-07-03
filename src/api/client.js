@@ -12,7 +12,10 @@
  *   GET  /assets                  → all assets
  *   GET  /demand-index            → demand index rankings
  *   GET  /balances                → user balances
+ *
+ * Multi-account: all functions accept optional `sessionFile` param.
  */
+import fs from 'fs';
 import config from '../utils/config.js';
 import logger from '../utils/logger.js';
 import { loadSession } from '../auth/session.js';
@@ -20,10 +23,25 @@ import { loadSession } from '../auth/session.js';
 const BASE_URL = config.baseUrl; // https://runway.edel.finance
 
 /**
- * Build Cookie header string from saved session cookies
+ * Build Cookie header string from saved session cookies.
+ * @param {string|null} sessionFile - Path to session JSON (null = default)
  */
-function buildCookieHeader() {
-  const session = loadSession();
+function buildCookieHeader(sessionFile = null) {
+  let session;
+  if (sessionFile) {
+    // Load from specific account session file
+    if (!fs.existsSync(sessionFile)) {
+      return null;
+    }
+    try {
+      session = JSON.parse(fs.readFileSync(sessionFile, 'utf-8'));
+    } catch {
+      return null;
+    }
+  } else {
+    session = loadSession();
+  }
+
   if (!session || !session.cookies || session.cookies.length === 0) {
     return null;
   }
@@ -36,8 +54,8 @@ function buildCookieHeader() {
 /**
  * Make an authenticated API request
  */
-async function apiFetch(path, options = {}) {
-  const cookie = buildCookieHeader();
+async function apiFetch(path, options = {}, sessionFile = null) {
+  const cookie = buildCookieHeader(sessionFile);
   if (!cookie) {
     throw new Error('No session cookies found. Run: npm run import');
   }
@@ -71,7 +89,7 @@ async function apiFetch(path, options = {}) {
 
   // Check for redirects to login
   if (res.redirected && (res.url.includes('/login') || res.url.includes('/register'))) {
-    throw new Error('SESSION_EXPIRED: Redirected ke login. Run: npm run import');
+    throw new Error('SESSION_EXPIRED: Redirected to login. Run: npm run import');
   }
 
   return res;
@@ -80,8 +98,8 @@ async function apiFetch(path, options = {}) {
 /**
  * GET request with JSON response
  */
-async function apiGet(path) {
-  const res = await apiFetch(path);
+async function apiGet(path, sessionFile = null) {
+  const res = await apiFetch(path, {}, sessionFile);
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(`API Error ${res.status} GET ${path}: ${body.substring(0, 200)}`);
@@ -93,11 +111,11 @@ async function apiGet(path) {
 /**
  * POST request with JSON body and response
  */
-async function apiPost(path, body = {}) {
+async function apiPost(path, body = {}, sessionFile = null) {
   const res = await apiFetch(path, {
     method: 'POST',
     body: JSON.stringify(body),
-  });
+  }, sessionFile);
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`API Error ${res.status} POST ${path}: ${text.substring(0, 200)}`);
@@ -112,40 +130,30 @@ async function apiPost(path, body = {}) {
 
 /**
  * Get all available assets/teams
- * GET /assets
  */
-export async function getAssets() {
-  const data = await apiGet('/assets');
+export async function getAssets(sessionFile = null) {
+  const data = await apiGet('/assets', sessionFile);
   return data.assets || [];
 }
 
 /**
  * Get listing system status
- * GET /listing/status
  */
-export async function getListingStatus() {
-  return apiGet('/listing/status');
+export async function getListingStatus(sessionFile = null) {
+  return apiGet('/listing/status', sessionFile);
 }
 
 /**
  * Get current listing round (Preview API)
- * GET /listing-round
- *
- * Returns preview-format round data with:
- *   - round or preview object
- *   - actions (prepareRound, submitPreview, etc.)
- *   - currentWindow
  */
-export async function getCurrentRound() {
-  // Try preview API first (new)
+export async function getCurrentRound(sessionFile = null) {
   try {
-    const data = await apiGet('/listing-round');
+    const data = await apiGet('/listing-round', sessionFile);
     return data;
   } catch (err) {
-    // If preview API fails, try legacy endpoint as fallback
     if (err.message.includes('404') || err.message.includes('ROUTE_NOT_FOUND')) {
       logger.debug('Preview API failed, trying legacy /listing-rounds/current...');
-      return apiGet('/listing-rounds/current');
+      return apiGet('/listing-rounds/current', sessionFile);
     }
     throw err;
   }
@@ -153,15 +161,14 @@ export async function getCurrentRound() {
 
 /**
  * Start/prepare a new listing round (Preview API)
- * POST /listing-round
  */
-export async function startRound() {
+export async function startRound(sessionFile = null) {
   try {
-    return await apiPost('/listing-round', {});
+    return await apiPost('/listing-round', {}, sessionFile);
   } catch (err) {
     if (err.message.includes('404') || err.message.includes('ROUTE_NOT_FOUND')) {
       logger.debug('Preview start failed, trying legacy /listing-rounds/start...');
-      return apiPost('/listing-rounds/start', {});
+      return apiPost('/listing-rounds/start', {}, sessionFile);
     }
     throw err;
   }
@@ -169,66 +176,47 @@ export async function startRound() {
 
 /**
  * Submit picks/selections (Preview API)
- * POST /listing-round/submit
- *
- * Preview API format:
- *   { previewId: string, picks: [{listingDecisionId, assetId}] }
- *
- * Legacy API format:
- *   POST /listing-rounds/{roundId}/picks
- *   { picks: [{roundDecisionId, assetId}] }
- *
- * @param {string} roundId - Round ID or preview ID
- * @param {Array} picks - Array of pick objects
- * @param {object} opts
- * @param {boolean} opts.isPreview - Whether to use preview API
  */
-export async function submitPicks(roundId, picks, { isPreview = false } = {}) {
+export async function submitPicks(roundId, picks, { isPreview = false, sessionFile = null } = {}) {
   if (isPreview) {
-    // Preview API: POST /listing-round/submit
     return apiPost('/listing-round/submit', {
       previewId: roundId,
       picks: picks.map((p) => ({
         listingDecisionId: p.roundDecisionId || p.listingDecisionId,
         assetId: p.assetId,
       })),
-    });
+    }, sessionFile);
   }
 
-  // Legacy API: POST /listing-rounds/{roundId}/picks
-  return apiPost(`/listing-rounds/${roundId}/picks`, { picks });
+  return apiPost(`/listing-rounds/${roundId}/picks`, { picks }, sessionFile);
 }
 
 /**
  * Get demand index / league table
- * GET /demand-index
  */
-export async function getDemandIndex() {
-  return apiGet('/demand-index');
+export async function getDemandIndex(sessionFile = null) {
+  return apiGet('/demand-index', sessionFile);
 }
 
 /**
  * Get balance for an instrument
- * GET /balances?instrumentId=xxx
  */
-export async function getBalance(instrumentId) {
+export async function getBalance(instrumentId, sessionFile = null) {
   const params = instrumentId ? `?instrumentId=${instrumentId}` : '';
-  return apiGet(`/balances${params}`);
+  return apiGet(`/balances${params}`, sessionFile);
 }
 
 /**
  * Check if the session is valid by calling the API
- * Returns true if authenticated, false if expired
  */
-export async function checkSession() {
+export async function checkSession(sessionFile = null) {
   try {
-    await apiGet('/listing/status');
+    await apiGet('/listing/status', sessionFile);
     return true;
   } catch (err) {
     if (err.message.includes('SESSION_EXPIRED')) return false;
-    // Try a lightweight endpoint
     try {
-      await apiGet('/profile');
+      await apiGet('/profile', sessionFile);
       return true;
     } catch {
       return false;
