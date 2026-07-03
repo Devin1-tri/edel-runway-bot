@@ -388,11 +388,78 @@ export async function performVote(account = null) {
 }
 
 /**
+ * Wait for EDELx lock to complete before submitting.
+ * Polls the round status until stakeLockStatus indicates lock is done.
+ * Returns true if lock is ready, false if timeout.
+ */
+async function waitForLock(sessionFile, maxWaitSeconds = 120) {
+  const startTime = Date.now();
+  const maxWaitMs = maxWaitSeconds * 1000;
+
+  logger.info('⏳ Waiting for EDELx lock to complete...');
+
+  while (Date.now() - startTime < maxWaitMs) {
+    try {
+      const data = await getCurrentRound(sessionFile);
+      const round = data?.round;
+
+      if (round) {
+        const lockStatus = round.stakeLockStatus;
+        const locked = round.lockedStakeAmount;
+        const allocated = round.allocatedStakeAmount;
+        const roundStatus = round.status;
+
+        logger.debug(`🔒 Lock status: ${lockStatus}, locked: ${locked?.units}, allocated: ${allocated?.units}, roundStatus: ${roundStatus}`);
+
+        // Check if lock is complete
+        if (roundStatus === 'SUBMITTED' || roundStatus === 'SETTLEMENT_PENDING' || roundStatus === 'SETTLED') {
+          logger.info('✅ Round already submitted.');
+          return 'already_submitted';
+        }
+
+        // If round status is LOCKED and we have lockedStakeAmount, lock is done
+        if (roundStatus === 'LOCKED' && locked?.units && locked.units !== '0') {
+          logger.info(`✅ EDELx lock complete! Locked: ${locked.units}`);
+          return 'ready';
+        }
+
+        // If round reverted to LOCK_PENDING or CREATED, lock is still in progress
+        if (roundStatus === 'LOCK_PENDING' || roundStatus === 'CREATED') {
+          logger.info(`⏳ Still locking... status: ${roundStatus}`);
+        }
+
+        // Check preview status too
+        const preview = data?.preview;
+        if (preview && roundStatus === 'LOCKED') {
+          logger.info('✅ Preview available with LOCKED status — ready to vote.');
+          return 'ready';
+        }
+      }
+
+      // Wait 5 seconds before next poll
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    } catch (err) {
+      logger.debug(`Lock check error: ${err.message}`);
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+  }
+
+  logger.warn(`⏰ Lock wait timeout (${maxWaitSeconds}s). Proceeding anyway.`);
+  return 'timeout';
+}
+
+/**
  * Actually perform voting on open fixtures
  */
 async function doVoting(parsed, strategy, sessionFile = null, tag = '') {
   const { roundId, fixtures, isPreview } = parsed;
-  logger.info(`✅ Calls are OPEN! ${fixtures.length} head-to-head fixtures`);
+  logger.info(`${tag}✅ Calls are OPEN! ${fixtures.length} head-to-head fixtures`);
+
+  // Wait for EDELx lock to complete before submitting
+  const lockStatus = await waitForLock(sessionFile);
+  if (lockStatus === 'already_submitted') {
+    return { success: true, details: { note: 'Already submitted (lock was complete)', strategy, round: roundId } };
+  }
 
   // Load assets for display
   let assetMap = new Map();

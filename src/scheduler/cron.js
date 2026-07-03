@@ -202,10 +202,9 @@ async function voteAllAccounts() {
 
   logger.info(`👥 Voting for ${accounts.length} account(s)...`);
 
-  // Stabilization delay — give server time to finish EDELx lock/allocation
-  // Server may show "Calls Open" before lock is actually complete
-  const stabDelay = 60 + Math.floor(Math.random() * 31); // 60-90 seconds
-  logger.info(`⏳ Stabilization delay: ${stabDelay}s (waiting for server to be ready)...`);
+  // Stabilization delay — small initial wait before checking lock status
+  const stabDelay = 10 + Math.floor(Math.random() * 6); // 10-15 seconds
+  logger.info(`⏳ Stabilization delay: ${stabDelay}s...`);
   await new Promise((resolve) => setTimeout(resolve, stabDelay * 1000));
 
   let overallStatus = 'waiting';
