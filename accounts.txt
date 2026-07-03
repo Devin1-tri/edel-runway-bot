@@ -1,0 +1,7 @@
+# Edel Bot — Account List
+# Add one account per line (e.g. A1, A2, A3)
+# Lines starting with # are ignored
+
+A1
+# A2
+# A3

@@ -9,6 +9,9 @@ node_modules/
 # Session data (berisi login cookies)
 sessions/
 
+# Runtime state (auto-generated)
+accounts.json
+
 # Generated files
 logs/
 screenshots/

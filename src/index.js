@@ -1,29 +1,22 @@
 import { validateConfig } from './utils/config.js';
 import config from './utils/config.js';
 import logger, { logSeparator } from './utils/logger.js';
-import { hasSession, getSessionAge, clearSession, importSession, importSessionFromFile } from './auth/session.js';
-import { checkSession } from './api/client.js';
 import { startScheduler, runSingleVote } from './scheduler/cron.js';
 import {
   getAccounts,
   getEnabledAccounts,
-  addAccount,
-  removeAccount,
+  getAccountCount,
   enableAccount,
   disableAccount,
-  getAccount,
-  getAccountCount,
+  hasAccountSession,
+  saveAccountSession,
   initDefaultAccount,
 } from './accounts/manager.js';
+import readline from 'readline';
 
-// Get CLI command
 const command = process.argv[2] || 'help';
 const extraArg = process.argv[3] || null;
-const extraArg2 = process.argv[4] || null;
 
-/**
- * Print usage help
- */
 function printHelp() {
   console.log(`
 \x1b[96m\x1b[1m  EDEL BOT \x1b[0m\x1b[90m─\x1b[0m\x1b[37m AUTO VOTE\x1b[0m
@@ -33,46 +26,127 @@ function printHelp() {
 Usage: node src/index.js <command>
 
 Commands:
-  import          🔐 Import session from Chrome DevTools
-                  (legacy single-account, use add-account for multi)
-
-  import-file <path>
-                  Import session from JSON file.
-
-  vote            Single vote for all accounts (no scheduling)
-
-  start           Start bot scheduler (auto vote + dynamic scheduling)
-                  Runs continuously until stopped (Ctrl+C)
-
-  status          Check session and config status
-
-  accounts        List all configured accounts
-
-  add-account [id] [label]
-                  Add a new account (e.g. add-account A1 Main)
-
-  remove-account <id>
-                  Remove an account
-
-  enable <id>     Enable an account
-
-  disable <id>    Disable an account
-
-  clear           Clear session (force re-import)
-
-  help            Show this help message
+  import    🔐 Import session for all accounts (interactive)
+  vote      Single vote for all accounts (no scheduling)
+  start     Start bot scheduler (auto vote + dynamic scheduling)
+  status    Check accounts and session status
+  accounts  List all configured accounts
+  enable    Enable an account  (e.g. enable A2)
+  disable   Disable an account (e.g. disable A1)
+  help      Show this help message
 
 NPM Shortcuts:
-  npm run import        → import session from Chrome
-  npm run vote          → single vote for all accounts
-  npm run start         → start bot scheduler
+  npm run import    → import sessions for all accounts
+  npm run vote      → single vote for all accounts
+  npm run start     → start bot scheduler
+  npm run accounts  → list accounts
 
-Multi-Account Workflow:
-  1. node src/index.js add-account A1 "Main Account"
-  2. node src/index.js add-account A2 "Second Account"
-  3. Import session for each account (copy cookie → save to sessions/A1.json, etc.)
-  4. node src/index.js start
+Setup:
+  1. Edit accounts.txt — add your accounts (one per line)
+  2. npm run import — paste cookie for each account
+  3. npm run start — run the bot
 `);
+}
+
+/**
+ * Parse cookie string into cookie objects.
+ */
+function parseCookies(input) {
+  const raw = input.trim();
+  // If it looks like a full cookie header: "name1=val1; name2=val2"
+  if (raw.includes('=')) {
+    return raw.split(';').map((pair) => {
+      const [name, ...rest] = pair.trim().split('=');
+      return { name: name.trim(), value: rest.join('=').trim() };
+    }).filter((c) => c.name);
+  }
+  // If it looks like just a JWT
+  if (raw.startsWith('eyJ')) {
+    return [{ name: 'edel_session', value: raw }];
+  }
+  return [];
+}
+
+/**
+ * Interactive import for all accounts.
+ */
+async function importAllAccounts() {
+  const accounts = getAccounts();
+
+  if (accounts.length === 0) {
+    console.log('\n❌ No accounts configured!');
+    console.log('   Edit accounts.txt and add your accounts:');
+    console.log('   A1');
+    console.log('   A2');
+    console.log('   A3');
+    console.log('');
+    process.exit(1);
+  }
+
+  console.log(`\n🔐 Import session for ${accounts.length} account(s)\n`);
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  const ask = (q) => new Promise((resolve) => rl.question(q, resolve));
+
+  let imported = 0;
+  for (const account of accounts) {
+    const hasSession = hasAccountSession(account.id);
+    const status = hasSession ? ' (has session)' : '';
+
+    console.log(`📋 Paste cookie for ${account.id}${status}:`);
+    console.log('   (edel_session=eyJ... or just the JWT token)');
+    const input = await ask(`   > `);
+
+    if (!input.trim()) {
+      console.log(`   ⏭️  Skipped ${account.id}\n`);
+      continue;
+    }
+
+    const cookies = parseCookies(input);
+    if (cookies.length === 0) {
+      console.log(`   ❌ Invalid cookie format. Skipped.\n`);
+      continue;
+    }
+
+    const hasEdel = cookies.some((c) => c.name === 'edel_session');
+    if (!hasEdel) {
+      console.log(`   ⚠️  No edel_session cookie found. Saving anyway.`);
+    }
+
+    saveAccountSession(account.id, cookies);
+    console.log(`   ✅ ${account.id} saved (${cookies.length} cookies)\n`);
+    imported++;
+  }
+
+  rl.close();
+  console.log(`✅ Done! ${imported}/${accounts.length} accounts imported.\n`);
+}
+
+/**
+ * List accounts with status.
+ */
+function listAccounts() {
+  initDefaultAccount();
+  const accounts = getAccounts();
+
+  if (accounts.length === 0) {
+    console.log('\n⚠️  No accounts configured.');
+    console.log('   Edit accounts.txt and add your accounts.\n');
+    return;
+  }
+
+  console.log(`\n👥 Accounts (${accounts.length}):\n`);
+  for (const acc of accounts) {
+    const enabled = acc.enabled ? '✅' : '⏸️';
+    const session = hasAccountSession(acc.id) ? '📦' : '❌';
+    const status = acc.lastVoteStatus || 'never';
+    console.log(`  ${enabled} ${session} ${acc.id.padEnd(4)} │ last: ${status}`);
+  }
+  console.log('\n  ✅=enabled ⏸️=disabled 📦=has session ❌=no session\n');
 }
 
 async function main() {
@@ -83,17 +157,12 @@ async function main() {
     process.exit(1);
   }
 
+  // Auto-migrate legacy session
+  initDefaultAccount();
+
   switch (command) {
     case 'import':
-      await importSession();
-      break;
-
-    case 'import-file':
-      if (!extraArg) {
-        console.error('❌ Usage: import-file <path>');
-        process.exit(1);
-      }
-      await importSessionFromFile(extraArg);
+      await importAllAccounts();
       break;
 
     case 'vote':
@@ -104,100 +173,33 @@ async function main() {
       await startScheduler();
       break;
 
-    case 'status': {
-      // Migrate if needed
-      initDefaultAccount();
-
-      const accounts = getAccounts();
-      if (accounts.length > 0) {
-        console.log(`\n👥 Accounts: ${accounts.length}`);
-        for (const acc of accounts) {
-          const icon = acc.enabled ? '✅' : '⏸️';
-          const status = acc.lastVoteStatus || 'never';
-          console.log(`  ${icon} ${acc.id} (${acc.label}): last=${status}`);
-        }
-      } else if (hasSession()) {
-        const age = getSessionAge();
-        const ageStr = age !== null ? `${age.toFixed(1)} hours` : 'unknown';
-        logger.info('🔍 Testing session...');
-        const valid = await checkSession();
-        if (valid) {
-          console.log(`✅ Session: Valid (age: ${ageStr})`);
-        } else {
-          console.warn(`⚠️  Session: Expired/Invalid (age: ${ageStr})`);
-        }
-      } else {
-        console.error('❌ No accounts configured. Run: add-account');
-      }
+    case 'status':
+      listAccounts();
       break;
-    }
 
-    case 'accounts': {
-      initDefaultAccount();
-      const accounts = getAccounts();
-      if (accounts.length === 0) {
-        console.log('\n⚠️  No accounts configured.');
-        console.log('   Run: node src/index.js add-account A1 "My Account"\n');
-      } else {
-        console.log(`\n👥 Accounts (${accounts.length}):\n`);
-        for (const acc of accounts) {
-          const statusIcon = acc.enabled ? '✅' : '⏸️';
-          const lastStatus = acc.lastVoteStatus || 'never voted';
-          const lastTime = acc.lastVote
-            ? new Date(acc.lastVote).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })
-            : 'never';
-          console.log(`  ${statusIcon} ${acc.id.padEnd(4)} │ ${acc.label.padEnd(20)} │ ${lastStatus.padEnd(12)} │ ${lastTime}`);
-        }
-        console.log('');
-      }
+    case 'accounts':
+      listAccounts();
       break;
-    }
-
-    case 'add-account': {
-      initDefaultAccount();
-      const id = extraArg || undefined;
-      const label = extraArg2 || '';
-      const account = addAccount(id, label);
-      console.log(`\n✅ Account added: ${account.id} (${account.label || account.id})`);
-      console.log(`   Session file: ${account.sessionFile}`);
-      console.log(`\n   Next: import session cookie for this account.\n`);
-      break;
-    }
-
-    case 'remove-account': {
-      if (!extraArg) {
-        console.error('❌ Usage: remove-account <id>');
-        process.exit(1);
-      }
-      const removed = removeAccount(extraArg);
-      console.log(`\n✅ Account removed: ${removed.id}\n`);
-      break;
-    }
 
     case 'enable': {
       if (!extraArg) {
-        console.error('❌ Usage: enable <id>');
+        console.error('❌ Usage: enable <id> (e.g. enable A2)');
         process.exit(1);
       }
       enableAccount(extraArg);
-      console.log(`✅ Account ${extraArg} enabled.`);
+      console.log(`✅ ${extraArg} enabled.`);
       break;
     }
 
     case 'disable': {
       if (!extraArg) {
-        console.error('❌ Usage: disable <id>');
+        console.error('❌ Usage: disable <id> (e.g. disable A1)');
         process.exit(1);
       }
       disableAccount(extraArg);
-      console.log(`✅ Account ${extraArg} disabled.`);
+      console.log(`✅ ${extraArg} disabled.`);
       break;
     }
-
-    case 'clear':
-      clearSession();
-      logger.info('Session cleared. Run "npm run import" to re-import.');
-      break;
 
     case 'help':
     default:

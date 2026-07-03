@@ -1,42 +1,56 @@
 /**
- * Telegram-based session import.
+ * Telegram-based session import (multi-account).
  *
- * When the bot detects SESSION_EXPIRED, it sends a Telegram notification
- * asking the user to paste the cookie. The bot then polls Telegram
- * for incoming messages, parses the cookie, and updates the session.
+ * User can paste cookies in Telegram with account prefix:
+ *   A1: edel_session=eyJ...
+ *   A2: eyJhbGciOi...
  *
- * This eliminates the need to SSH into the VPS for re-import.
+ * Without prefix → defaults to A1 (backward compatible).
+ *
+ * When SESSION_EXPIRED, bot asks for cookie via Telegram.
+ * The cookie message is auto-deleted for security.
  */
 import config from '../utils/config.js';
 import logger from '../utils/logger.js';
-import { saveSessionRaw } from './session.js';
+import { saveAccountSession, getAccounts, hasAccountSession } from '../accounts/manager.js';
 import { sendTelegram } from '../utils/telegram.js';
 
 const TELEGRAM_API = 'https://api.telegram.org/bot';
 
 /**
- * Parse cookie string from a Telegram message.
+ * Parse cookie message with optional account prefix.
  *
- * Accepts these formats:
- *   1. Full cookie string: "edel_session=eyJ...; _ga=GA1..."
- *   2. With prefix: "Cookie: edel_session=eyJ..."
- *   3. Just the JWT token: "eyJhbGciOiJ..."
+ * Formats:
+ *   "A1: edel_session=eyJ..." → { accountId: 'A1', cookies: [...] }
+ *   "A2: eyJhbGciOi..."       → { accountId: 'A2', cookies: [...] }
+ *   "edel_session=eyJ..."     → { accountId: 'A1', cookies: [...] } (default)
+ *   "eyJhbGciOi..."           → { accountId: 'A1', cookies: [...] } (default)
  *
  * @param {string} text - Raw message text
- * @returns {Array|null} Parsed cookies array or null
+ * @returns {{ accountId: string, cookies: Array } | null}
  */
-function parseCookieFromMessage(text) {
+function parseCookieMessage(text) {
   if (!text) return null;
 
-  const cleaned = text.trim();
+  let cleaned = text.trim();
 
   // Ignore short messages and bot commands
   if (cleaned.length < 20) return null;
   if (cleaned.startsWith('/')) return null;
 
-  // Case 1: Cookie string containing edel_session=xxx
+  // Check for account prefix: "A1: ..." or "A2: ..."
+  let accountId = 'A1'; // default
+  const prefixMatch = cleaned.match(/^(A\d+):\s*/i);
+  if (prefixMatch) {
+    accountId = prefixMatch[1].toUpperCase();
+    cleaned = cleaned.substring(prefixMatch[0].length).trim();
+  }
+
+  // Parse cookies
+  let cookies = [];
+
   if (cleaned.includes('edel_session=')) {
-    const cookies = [];
+    // Full cookie string
     const raw = cleaned.replace(/^Cookie:\s*/i, '').trim();
     const pairs = raw.split(/;\s*/);
 
@@ -59,63 +73,74 @@ function parseCookieFromMessage(text) {
       });
     }
 
-    if (cookies.some((c) => c.name === 'edel_session')) {
-      return cookies;
+    if (!cookies.some((c) => c.name === 'edel_session')) {
+      return null;
     }
+  } else if (cleaned.startsWith('eyJ') && cleaned.length > 50 && !cleaned.includes(' ')) {
+    // Just JWT token
+    cookies = [{
+      name: 'edel_session',
+      value: cleaned,
+      domain: 'runway.edel.finance',
+      path: '/',
+      expires: Date.now() / 1000 + 86400 * 30,
+      httpOnly: false,
+      secure: true,
+      sameSite: 'Lax',
+    }];
+  } else {
+    return null;
   }
 
-  // Case 2: Just the JWT token value (starts with eyJ, base64 encoded JSON)
-  if (cleaned.startsWith('eyJ') && cleaned.length > 50 && !cleaned.includes(' ')) {
-    return [
-      {
-        name: 'edel_session',
-        value: cleaned,
-        domain: 'runway.edel.finance',
-        path: '/',
-        expires: Date.now() / 1000 + 86400 * 30,
-        httpOnly: false,
-        secure: true,
-        sameSite: 'Lax',
-      },
-    ];
-  }
-
-  return null;
+  return { accountId, cookies };
 }
+
+// Persistent offset
+let _telegramOffset = 0;
+let _offsetInitialized = false;
 
 /**
  * Poll Telegram for cookie messages from the user.
  *
- * Uses Telegram Bot API long polling (getUpdates) to wait for
- * the user to paste a cookie string in the chat.
- *
- * IMPORTANT: The offset is persisted between calls so that cookie
- * messages sent between wait cycles are NOT lost.
- *
- * @param {number} timeoutMinutes - Max time to wait (default: 60 min)
- * @returns {boolean} true if cookie was received and saved
+ * @param {number} timeoutMinutes - Max time to wait
+ * @param {string|null} expectedAccount - If set, only accept this account (e.g. 'A1')
+ * @returns {{ accountId: string, cookies: Array } | null}
  */
-
-// Persistent offset — only initialized once on first call
-let _telegramOffset = 0;
-let _offsetInitialized = false;
-
-export async function waitForCookieViaTelegram(timeoutMinutes = 60) {
+export async function waitForCookieViaTelegram(timeoutMinutes = 60, expectedAccount = null) {
   const { telegramBotToken, telegramChatId } = config;
 
   if (!telegramBotToken || !telegramChatId) {
     logger.error('❌ Telegram not configured. Cannot wait for cookie.');
-    return false;
+    return null;
   }
 
+  const hint = expectedAccount
+    ? `Paste cookie for ${expectedAccount}: ${expectedAccount}: edel_session=eyJ...`
+    : 'Paste cookie: A1: edel_session=eyJ... (or without prefix for A1)';
+
   logger.info('📱 Waiting for cookie via Telegram...');
+  logger.info(`   Format: ${hint}`);
   logger.info(`   Timeout: ${timeoutMinutes} minutes`);
+
+  await sendTelegram(
+    [
+      '🔑 *SESSION EXPIRED*',
+      '',
+      'Paste new cookie to continue:',
+      '',
+      expectedAccount
+        ? `\`${expectedAccount}: edel_session=eyJ...\``
+        : '`A1: edel_session=eyJ...`',
+      '',
+      '💡 Prefix with account ID (A1:, A2:, etc.)',
+      '   Without prefix → defaults to A1',
+    ].join('\n')
+  );
 
   const startTime = Date.now();
   const timeoutMs = timeoutMinutes * 60 * 1000;
 
-  // Only skip old messages on the very FIRST call after bot start.
-  // Subsequent calls reuse the offset so no messages are lost.
+  // Skip old messages on first call
   if (!_offsetInitialized) {
     _offsetInitialized = true;
     try {
@@ -132,7 +157,6 @@ export async function waitForCookieViaTelegram(timeoutMinutes = 60) {
 
   while (Date.now() - startTime < timeoutMs) {
     try {
-      // Long polling — wait up to 30 seconds for new messages
       const url = `${TELEGRAM_API}${telegramBotToken}/getUpdates?offset=${_telegramOffset}&timeout=30`;
       const res = await fetch(url);
       const data = await res.json();
@@ -148,49 +172,49 @@ export async function waitForCookieViaTelegram(timeoutMinutes = 60) {
         const msg = update.message;
 
         if (!msg || !msg.text) continue;
-
-        // Only accept messages from the configured chat
         if (String(msg.chat.id) !== String(telegramChatId)) continue;
 
-        // Try to parse as cookie
-        const cookies = parseCookieFromMessage(msg.text);
-        if (!cookies) continue;
+        const parsed = parseCookieMessage(msg.text);
+        if (!parsed) continue;
 
-        // Valid cookie found! Save it.
-        logger.info('🍪 Cookie diterima via Telegram!');
+        // If expected account, verify match
+        if (expectedAccount && parsed.accountId !== expectedAccount) {
+          logger.info(`   Got cookie for ${parsed.accountId}, expected ${expectedAccount}. Ignoring.`);
+          continue;
+        }
 
-        const state = {
-          cookies,
-          origins: [
-            {
-              origin: 'https://runway.edel.finance',
-              localStorage: [],
-            },
-          ],
-        };
-        saveSessionRaw(state);
+        // Verify account exists
+        const accounts = getAccounts();
+        const account = accounts.find((a) => a.id === parsed.accountId);
+        if (!account) {
+          await sendTelegram(`❌ Account *${parsed.accountId}* not found in accounts.txt`);
+          continue;
+        }
 
-        const edelCookie = cookies.find((c) => c.name === 'edel_session');
+        // Save to account session
+        saveAccountSession(parsed.accountId, parsed.cookies);
+
+        const edelCookie = parsed.cookies.find((c) => c.name === 'edel_session');
         const tokenPreview = edelCookie
           ? `${edelCookie.value.substring(0, 20)}...`
           : 'N/A';
 
-        logger.info(`✅ Session saved! Token: ${tokenPreview}`);
-        logger.info(`   ${cookies.length} cookies imported`);
+        logger.info(`🍪 ${parsed.accountId} cookie received via Telegram!`);
+        logger.info(`   Token: ${tokenPreview}`);
+        logger.info(`   ${parsed.cookies.length} cookies saved`);
 
-        // Send success notification
         await sendTelegram(
           [
-            '✅ *SESSION UPDATED*',
+            `✅ *${parsed.accountId} SESSION UPDATED*`,
             '',
-            `🍪 Cookie imported successfully via Telegram!`,
-            `📦 ${cookies.length} cookies saved`,
+            `🍪 ${parsed.cookies.length} cookies saved`,
+            `🔑 Token: \`${tokenPreview}\``,
             '',
             '▶️ Bot will continue voting...',
           ].join('\n')
         );
 
-        // Delete the message containing the cookie (security)
+        // Delete cookie message for security
         try {
           await fetch(`${TELEGRAM_API}${telegramBotToken}/deleteMessage`, {
             method: 'POST',
@@ -205,7 +229,7 @@ export async function waitForCookieViaTelegram(timeoutMinutes = 60) {
           logger.debug(`Could not delete cookie message: ${e.message}`);
         }
 
-        return true;
+        return parsed;
       }
     } catch (err) {
       logger.debug(`Telegram poll error: ${err.message}`);
@@ -214,5 +238,5 @@ export async function waitForCookieViaTelegram(timeoutMinutes = 60) {
   }
 
   logger.warn(`⏰ Timeout (${timeoutMinutes} min) waiting for cookie via Telegram.`);
-  return false;
+  return null;
 }

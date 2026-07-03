@@ -10,8 +10,9 @@
  *      - Wait 1 min
  *      - Account 3 → vote (max 3 retries)
  *      - ... etc
- *   3. After all accounts done, sync with next round window
- *   4. Repeat forever
+ *   3. Send ONE consolidated notification for the whole cycle
+ *   4. Sync with next round window
+ *   5. Repeat forever
  */
 import config from '../utils/config.js';
 import logger, { logSeparator } from '../utils/logger.js';
@@ -19,11 +20,7 @@ import { performVote } from '../bot/voter.js';
 import { waitForCookieViaTelegram } from '../auth/telegram-import.js';
 import { initDisplay, updateStatus, destroyDisplay } from '../utils/display.js';
 import {
-  notifyVoteSuccess,
-  notifyVoteFailed,
-  notifySessionExpired,
   notifyBotStarted,
-  notifyNextVote,
   sendTelegram,
 } from '../utils/telegram.js';
 import {
@@ -35,7 +32,6 @@ import {
 
 // Track last notified state to avoid spam
 let lastNotifiedState = null;
-let sessionExpiredNotified = false;
 
 // Track active timer for graceful shutdown
 let nextVoteTimer = null;
@@ -45,7 +41,7 @@ const ACCOUNT_DELAY_MS = 1 * 60 * 1000; // 1 minute
 
 /**
  * Vote for a single account with retry logic.
- * Returns { status, roundTiming, accountId }
+ * Returns { status, roundTiming, accountId, assets }
  */
 async function voteForAccount(account) {
   const accountId = account.id;
@@ -69,30 +65,25 @@ async function voteForAccount(account) {
 
       if (result.success) {
         if (result.details?.note?.includes('Already submitted')) {
-          logger.info(`${tag}✅ Already submitted for this round.`);
+          logger.info(`${tag}ℹ️  Already submitted.`);
           updateAccountStatus(accountId, { lastVoteStatus: 'already_voted' });
-          return { status: 'already_voted', roundTiming, accountId };
+          return { status: 'already_voted', roundTiming, accountId, assets: null };
         } else if (result.details?.note) {
           logger.info(`${tag}⏳ ${result.details.note}`);
           updateAccountStatus(accountId, { lastVoteStatus: 'waiting' });
-          return { status: 'waiting', roundTiming, accountId };
+          return { status: 'waiting', roundTiming, accountId, assets: null };
         } else {
-          logger.info(`${tag}🎉 Vote success!`);
+          logger.info(`${tag}✅ Vote success!`);
           updateAccountStatus(accountId, { lastVoteStatus: 'voted' });
-          await notifyVoteSuccess({ ...result.details, accountId });
-          return { status: 'voted', roundTiming, accountId };
+          return { status: 'voted', roundTiming, accountId, assets: result.details?.asset || 'N/A' };
         }
       }
 
       // Session expired
       if (result.details?.sessionExpired) {
         logger.error(`${tag}🔑 Session expired.`);
-        if (!sessionExpiredNotified) {
-          sessionExpiredNotified = true;
-          await notifySessionExpired();
-        }
         updateAccountStatus(accountId, { lastVoteStatus: 'failed' });
-        return { status: 'failed', roundTiming, accountId, sessionExpired: true };
+        return { status: 'failed', roundTiming, accountId, assets: null, error: 'Session expired', sessionExpired: true };
       }
 
       lastError = result.details?.error;
@@ -100,29 +91,12 @@ async function voteForAccount(account) {
         ? 'Server timeout (502/504)'
         : (lastError || '').substring(0, 100);
       logger.warn(`${tag}⚠️  Attempt ${attempt}/${config.maxRetries} failed: ${shortError}`);
-
-      await notifyVoteFailed({
-        ...result.details,
-        accountId,
-        attempt,
-        maxAttempts: config.maxRetries,
-        willRetry: attempt < config.maxRetries,
-      });
     } catch (err) {
       lastError = err.message;
       const shortCrash = (lastError || '').includes('502') || (lastError || '').includes('504')
         ? 'Server timeout (502/504)'
         : (lastError || '').substring(0, 100);
       logger.error(`${tag}💥 Attempt ${attempt}/${config.maxRetries} crashed: ${shortCrash}`);
-
-      await notifyVoteFailed({
-        error: err.message,
-        accountId,
-        strategy: config.voteStrategy,
-        attempt,
-        maxAttempts: config.maxRetries,
-        willRetry: attempt < config.maxRetries,
-      });
     }
 
     if (attempt < config.maxRetries) {
@@ -137,18 +111,92 @@ async function voteForAccount(account) {
     : (lastError || '').substring(0, 100);
   logger.error(`${tag}❌ All ${config.maxRetries} attempts failed: ${shortFinal}`);
   updateAccountStatus(accountId, { lastVoteStatus: 'failed' });
-  return { status: 'failed', roundTiming, accountId };
+  return { status: 'failed', roundTiming, accountId, assets: null, error: shortFinal };
+}
+
+/**
+ * Build consolidated notification message.
+ */
+function buildCycleNotification(results, nextVoteTime) {
+  const total = results.length;
+  const voted = results.filter((r) => r.status === 'voted').length;
+  const alreadyVoted = results.filter((r) => r.status === 'already_voted').length;
+  const failed = results.filter((r) => r.status === 'failed').length;
+  const waiting = results.filter((r) => r.status === 'waiting').length;
+
+  const time = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+  const nextStr = nextVoteTime
+    ? nextVoteTime.toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', hour12: false })
+    : 'N/A';
+
+  // All already voted
+  if (alreadyVoted === total) {
+    return [
+      `ℹ️ *ALREADY VOTED* (${total}/${total})`,
+      '',
+      ...results.map((r) => `👤 ${r.accountId}: Already submitted`),
+      '',
+      `🕐 Time: ${time}`,
+      `⏰ Next: ${nextStr}`,
+    ].join('\n');
+  }
+
+  // All waiting (between rounds)
+  if (waiting === total) {
+    return [
+      '⏳ *BETWEEN ROUNDS*',
+      '',
+      'Calls are being prepared. Bot will auto-vote when ready.',
+    ].join('\n');
+  }
+
+  // All failed
+  if (failed === total) {
+    return [
+      `❌ *VOTE CYCLE FAILED* (${failed}/${total})`,
+      '',
+      ...results.map((r) => `👤 ${r.accountId}: ❌ ${r.error || 'Failed'}`),
+      '',
+      `🕐 Time: ${time}`,
+      `⏰ Next: ${nextStr}`,
+    ].join('\n');
+  }
+
+  // Mixed or all success
+  const header = failed > 0
+    ? `⚠️ *VOTE CYCLE COMPLETE* (${voted}/${total})`
+    : `✅ *VOTE CYCLE COMPLETE* (${voted}/${total})`;
+
+  const lines = results.map((r) => {
+    if (r.status === 'voted') {
+      return `👤 ${r.accountId}: ${r.assets || 'N/A'}`;
+    } else if (r.status === 'already_voted') {
+      return `👤 ${r.accountId}: Already submitted ℹ️`;
+    } else {
+      return `👤 ${r.accountId}: ❌ ${r.error || 'Failed'}`;
+    }
+  });
+
+  return [
+    header,
+    '',
+    ...lines,
+    '',
+    `🎯 Strategy: \`${config.voteStrategy}\``,
+    `🕐 Time: ${time}`,
+    `⏰ Next: ${nextStr}`,
+  ].join('\n');
 }
 
 /**
  * Vote for all enabled accounts sequentially.
- * Returns { overallStatus, roundTiming }
+ * Sends ONE consolidated notification after all accounts done.
  */
 async function voteAllAccounts() {
   const accounts = getEnabledAccounts();
 
   if (accounts.length === 0) {
-    logger.warn('⚠️  No enabled accounts. Add accounts with: npm run add-account');
+    logger.warn('⚠️  No enabled accounts. Edit accounts.txt to add accounts.');
     return { overallStatus: 'failed', roundTiming: null };
   }
 
@@ -162,7 +210,6 @@ async function voteAllAccounts() {
     const account = accounts[i];
 
     if (i > 0) {
-      // Delay between accounts (except before first)
       logger.info(`⏳ Waiting 1 min before next account...`);
       await new Promise((resolve) => setTimeout(resolve, ACCOUNT_DELAY_MS));
     }
@@ -170,12 +217,10 @@ async function voteAllAccounts() {
     const result = await voteForAccount(account);
     results.push(result);
 
-    // Capture round timing from any account
     if (result.roundTiming) {
       roundTiming = result.roundTiming;
     }
 
-    // Track overall status
     if (result.status === 'voted') {
       overallStatus = 'voted';
     } else if (result.status === 'already_voted' && overallStatus !== 'voted') {
@@ -190,10 +235,26 @@ async function voteAllAccounts() {
   logger.info(`📊 Voting summary:`);
   for (const r of results) {
     const icon = r.status === 'voted' ? '✅' : r.status === 'already_voted' ? 'ℹ️' : '❌';
-    logger.info(`   ${icon} ${r.accountId}: ${r.status}`);
+    logger.info(`   ${icon} ${r.accountId}: ${r.status}${r.assets ? ` (${r.assets})` : ''}`);
   }
 
-  return { overallStatus, roundTiming };
+  // Calculate next vote time for notification
+  const nextDelay = getNextDelay(overallStatus, roundTiming);
+  const nextVoteTime = new Date(Date.now() + nextDelay);
+
+  // Send consolidated notification
+  const notifMsg = buildCycleNotification(results, nextVoteTime);
+  const shouldNotify = overallStatus === 'voted'
+    || (overallStatus === 'already_voted' && lastNotifiedState !== 'already_voted')
+    || (overallStatus === 'waiting' && lastNotifiedState !== 'waiting')
+    || overallStatus === 'failed';
+
+  if (shouldNotify) {
+    await sendTelegram(notifMsg);
+    lastNotifiedState = overallStatus;
+  }
+
+  return { overallStatus, roundTiming, nextDelay };
 }
 
 /**
@@ -218,7 +279,6 @@ function getNextDelay(result, roundTiming = null) {
         const delay = nextRound + bufferMs - Date.now();
 
         if (delay > 0) {
-          const nextStr = new Date(nextRound + bufferMs).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
           const delayMin = Math.round(delay / 60000);
           logger.info(`📅 Syncing with round: next opens at ${new Date(nextRound).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}, voting in ${delayMin} min (+${bufferMin} min buffer)`);
           return delay;
@@ -264,21 +324,8 @@ function scheduleNextVote(delayMs) {
 
   nextVoteTimer = setTimeout(async () => {
     try {
-      const { overallStatus, roundTiming } = await voteAllAccounts();
-      const nextDelay = getNextDelay(overallStatus, roundTiming);
-      const scheduledTime = scheduleNextVote(nextDelay);
-
-      // Smart notification: only notify on state change
-      if (overallStatus === 'voted') {
-        await notifyNextVote(scheduledTime);
-        lastNotifiedState = 'voted';
-      } else if (overallStatus === 'already_voted' && lastNotifiedState !== 'already_voted') {
-        await notifyNextVote(scheduledTime);
-        lastNotifiedState = 'already_voted';
-      } else if (overallStatus === 'waiting' && lastNotifiedState !== 'waiting') {
-        await sendTelegram(`⏳ *BETWEEN ROUNDS*\n\nCalls are being prepared. Bot will auto-vote when ready.`);
-        lastNotifiedState = 'waiting';
-      }
+      const { overallStatus, roundTiming, nextDelay } = await voteAllAccounts();
+      scheduleNextVote(nextDelay);
     } catch (err) {
       logger.error(`Scheduled vote cycle error: ${err.message}`);
       const retryDelay = config.retryIntervalMinutes * 60 * 1000;
@@ -293,7 +340,6 @@ function scheduleNextVote(delayMs) {
  * Start the dynamic vote scheduler.
  */
 export async function startScheduler() {
-  // Migrate single-account to multi-account if needed
   initDefaultAccount();
 
   const accountCount = getAccountCount();
@@ -313,11 +359,9 @@ export async function startScheduler() {
   await notifyBotStarted();
 
   logger.info('▶️  Running initial vote cycle...');
-  const { overallStatus, roundTiming } = await voteAllAccounts();
+  const { overallStatus, roundTiming, nextDelay } = await voteAllAccounts();
 
-  const nextDelay = getNextDelay(overallStatus, roundTiming);
-  const nextTime = scheduleNextVote(nextDelay);
-  await notifyNextVote(nextTime);
+  scheduleNextVote(nextDelay);
 
   logger.info('');
   logger.info('📡 Bot is running with dynamic scheduling...');

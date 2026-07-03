@@ -9,9 +9,7 @@
     "vote": "node src/index.js vote",
     "start": "node src/index.js start",
     "status": "node src/index.js status",
-    "accounts": "node src/index.js accounts",
-    "add-account": "node src/index.js add-account",
-    "remove-account": "node src/index.js remove-account"
+    "accounts": "node src/index.js accounts"
   },
   "keywords": ["edel", "runway", "bot", "vote"],
   "license": "MIT",

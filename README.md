@@ -2,23 +2,22 @@
 
 Automated daily voting bot for **Listing Calls** on [Edel Finance Runway Desk](https://runway.edel.finance/listing-calls).
 
-Fork of [AaBatok/Edel](https://github.com/AaBatok/Edel) with additional voting strategies.
+Fork of [AaBatok/Edel](https://github.com/AaBatok/Edel) with multi-account, smart scheduling, and voting strategies.
 
 ## ✨ Features
 
-- **Multi-Account** — run 3-5 accounts sequentially (no collision, no missed rounds)
-- **Auto Vote** every round (syncs with round window automatically)
-- **Smart Scheduling** — waits for next round to open + random 5-9 min buffer (no fixed interval)
-- **Multiple Voting Strategies** — marketcap, popular, underdog, demand, or always-pick-a-ticker
-- **Telegram Notifications** — real-time alerts on vote success/failure
-- **Session Import** — login in Chrome, copy cookie, paste on VPS
-- **Retry Logic** — auto retry with exponential backoff
+- **Multi-Account** — run multiple accounts sequentially (no collision, no missed rounds)
+- **Smart Scheduling** — syncs with round window + random +5-9 min buffer
+- **9 Voting Strategies** — demand, marketcap, popular, underdog, pick-TICKER, and more
+- **Consolidated Notifications** — one Telegram report per vote cycle (not per account)
+- **Session Import** — interactive multi-account import via CLI or Telegram
+- **Retry Logic** — auto retry with exponential backoff per account
 - **VPS Ready** — runs in `screen`, auto-restart on failure
 
 ## 📋 Prerequisites
 
 - **Node.js v18+** → [Download](https://nodejs.org/)
-- **Runway Desk account** → [Register](https://runway.edel.finance/register)
+- **Runway Desk account(s)** → [Register](https://runway.edel.finance/register)
 
 ## 🚀 Quick Start
 
@@ -30,154 +29,180 @@ cd edel-runway-bot
 npm install
 ```
 
-### 2. Configure
+### 2. Configure Accounts
 
-```bash
-cp .env.example .env
-nano .env
+Edit `accounts.txt` — add your accounts (one per line):
+
+```
+A1
+A2
+A3
 ```
 
-Set `VOTE_STRATEGY` to your preferred strategy (see below).
+Lines starting with `#` are ignored. Uncomment to enable.
 
-### 3. Setup Telegram Bot (Optional but Recommended)
-
-1. Open Telegram, search for **@BotFather**
-2. Send `/newbot` → follow instructions → get **Bot Token**
-3. Open your bot, send any message (e.g. "hello")
-4. Open in browser: `https://api.telegram.org/bot<TOKEN>/getUpdates`
-5. Find `"chat":{"id": 123456789}` → that's your **Chat ID**
-6. Enter both in `.env`
-
-### 4. Import Session from Chrome
+### 3. Import Sessions
 
 ```bash
 npm run import
 ```
 
-How to get the cookie:
+This will prompt you to paste cookies for each account:
 
-1. **Login** in Chrome → open https://runway.edel.finance
-2. Press **F12** (DevTools) → click **Network** tab
-3. **Refresh** the page (Ctrl+R)
-4. **Click** the first request in the list
-5. In the right panel, find **"Cookie:"** under Request Headers
-6. **Copy** the entire value
-7. On VPS: `npm run import` → **paste** → Enter
+```
+🔐 Import session for 3 account(s)
 
-> 💡 The important part is the `edel_session=eyJ...` cookie (JWT token).
-> You can also paste just the token starting with `eyJ...`
+📋 Paste cookie for A1:
+   > edel_session=eyJ...
+   ✅ A1 saved (3 cookies)
+
+📋 Paste cookie for A2:
+   > edel_session=eyJ...
+   ✅ A2 saved (3 cookies)
+
+📋 Paste cookie for A3:
+   > edel_session=eyJ...
+   ✅ A3 saved (3 cookies)
+
+✅ Done! 3/3 accounts imported.
+```
+
+### 4. Run
+
+```bash
+# Test single vote
+npm run vote
+
+# Start auto-vote bot
+npm run start
+```
 
 ### 5. Run in Screen
 
 ```bash
 screen -S edel
 npm run start
-# Press Ctrl+A then D to detach (bot keeps running)
-```
-
-### Screen Commands
-
-```bash
-screen -S edel          # Create new screen
-screen -r edel          # Reattach to existing screen
-screen -ls              # List all active screens
-# Ctrl+A then D         # Detach (exit without stopping)
-# Ctrl+C                # Stop bot (inside screen)
-```
-
-### Update Bot
-
-```bash
-cd edel-runway-bot
-git pull origin main
-npm install
-```
-
-### Re-import Session (if expired)
-
-```bash
-screen -r edel          # Enter screen
-# Ctrl+C                # Stop bot
-npm run import          # Paste new cookie
-npm run start           # Restart
-# Ctrl+A then D         # Detach
+# Press Ctrl+A then D to detach
 ```
 
 ---
 
-## 👥 Multi-Account
+## 👥 Multi-Account Management
 
-Run multiple Edel accounts from a single bot. Votes are sequential (no collision).
-
-### Setup
+### Check Accounts
 
 ```bash
-# Add accounts
-node src/index.js add-account A1 "Main Account"
-node src/index.js add-account A2 "Second Account"
-node src/index.js add-account A3 "Third Account"
-
-# List accounts
-node src/index.js accounts
+npm run accounts
 ```
 
-### Import Session per Account
+Output:
+```
+👥 Accounts (3):
 
-Each account needs its own session cookie. Copy the cookie from Chrome and save:
+  ✅ 📦 A1   │ last: voted
+  ✅ 📦 A2   │ last: already_voted
+  ⏸️ ❌ A3   │ last: never
+```
+
+### Enable/Disable Accounts
 
 ```bash
-# For A1: save session to sessions/A1.json
-# For A2: save session to sessions/A2.json
-# etc.
+node src/index.js disable A2    # Skip A2 in vote cycle
+node src/index.js enable A2     # Re-enable
 ```
+
+### Add/Remove Accounts
+
+1. Edit `accounts.txt` — add/remove lines
+2. Run `npm run import` to set up cookies for new accounts
 
 ### Vote Flow
 
 ```
 Round opens → +5-9 min (random buffer)
-→ Account A1 votes → 1 min delay
-→ Account A2 votes → 1 min delay
-→ Account A3 votes
-→ All done → sync with next round
+→ A1 votes → 1 min delay
+→ A2 votes → 1 min delay
+→ A3 votes
+→ Send consolidated report to Telegram
+→ Sync with next round window
 ```
 
 **Total time:** ~10-14 min for 3 accounts, ~14-18 min for 5 accounts.
 
-### Account Management
+### Auto-Migration
 
-```bash
-node src/index.js accounts          # List all accounts
-node src/index.js disable A2        # Disable an account
-node src/index.js enable A2         # Re-enable
-node src/index.js remove-account A3 # Remove permanently
-```
-
-### Migration from Single Account
-
-If you have an existing `sessions/state.json`, the bot automatically migrates it to `A1` on first run.
+If you have an existing `sessions/state.json` from single-account mode, the bot automatically migrates it to `A1` on first run.
 
 ---
 
-## ⏰ Smart Scheduling
+## 📱 Telegram Cookie Refresh
 
-The bot automatically syncs with Edel's round windows instead of using a fixed timer.
+When a session expires, paste new cookie in Telegram:
 
-**How it works:**
-1. After voting (or detecting "already submitted"), the bot reads `nextRoundStartsAt` from the API
-2. Waits until that time + a random buffer of **+5 to +9 minutes**
-3. This random delay makes the bot look more human-like
-4. If round timing is unavailable (API down), falls back to fixed 65-min interval
-
-**Example:**
 ```
-Round opens at 15:00 → Bot votes at 15:07 (+7 min buffer)
-Round opens at 16:00 → Bot votes at 16:05 (+5 min buffer)
-Round opens at 17:00 → Bot votes at 17:09 (+9 min buffer)
+A1: edel_session=eyJ...
 ```
+
+- Prefix with account ID (`A1:`, `A2:`, etc.)
+- Without prefix → defaults to `A1`
+- Cookie message is auto-deleted for security
+
+---
+
+## 📨 Telegram Notifications
+
+One consolidated report per vote cycle:
+
+**All success:**
+```
+✅ VOTE CYCLE COMPLETE (3/3)
+
+👤 A1: NVDA, AAPL, META, AMZN, MSFT, TSLA, GOOGL
+👤 A2: NVDA, PLTR, V, AMZN, JPM, MA, GS
+👤 A3: META, AAPL, NVDA, AMZN, GOOGL, MSFT, NFLX
+
+🎯 Strategy: demand
+🕐 Time: 3/7/2026, 15.09.00
+⏰ Next: 17.05.00
+```
+
+**Partial failure:**
+```
+⚠️ VOTE CYCLE COMPLETE (2/3)
+
+👤 A1: NVDA, AAPL, META, AMZN, MSFT, TSLA, GOOGL
+👤 A2: ❌ Server timeout (502/504)
+👤 A3: META, AAPL, NVDA, AMZN, GOOGL, MSFT, NFLX
+
+🎯 Strategy: demand
+🕐 Time: 3/7/2026, 15.09.00
+⏰ Next: 17.05.00
+```
+
+**Already voted:**
+```
+ℹ️ ALREADY VOTED (3/3)
+
+👤 A1: Already submitted
+👤 A2: Already submitted
+👤 A3: Already submitted
+
+🕐 Time: 3/7/2026, 15.09.00
+⏰ Next: 17.05.00
+```
+
+**Between rounds:**
+```
+⏳ BETWEEN ROUNDS
+
+Calls are being prepared. Bot will auto-vote when ready.
+```
+
+---
 
 ## 🎯 Voting Strategies
 
-Set `VOTE_STRATEGY` in `.env` to choose how the bot picks assets in each head-to-head matchup.
+Set `VOTE_STRATEGY` in `.env` to choose how the bot picks assets.
 
 | Strategy | Description |
 |---|---|
@@ -188,65 +213,31 @@ Set `VOTE_STRATEGY` in `.env` to choose how the bot picks assets in each head-to
 | `marketcap` | Pick the asset with higher market cap |
 | `popular` | Pick by brand/hype tier (AI/tech hype > blue chips > rest) |
 | `underdog` | Pick the smaller company (contrarian strategy) |
-| `demand` | Pick based on Edel's Demand Index (actual voting history — community behavior) |
-| `pick-<TICKER>` | Always pick a specific ticker when it appears in a matchup |
+| `demand` | Pick based on Edel's Demand Index (actual voting history) |
+| `pick-<TICKER>` | Always pick a specific ticker when it appears |
 
-### Strategy Details
-
-#### `marketcap`
-Picks the asset with the larger market capitalization. When NVDA faces GOOGL, it picks NVDA. When JPM faces PLTR, it picks JPM. Falls back to random if the ticker isn't in the known ranking.
-
-**Best for:** Playing it safe with established large-cap companies.
-
-#### `popular`
-Picks based on brand recognition and hype:
-- **Tier 1 (AI/Hype):** NVDA, PLTR, TSLA, AMD, AMZN, GOOGL, META, MSFT, AAPL, NFLX
-- **Tier 2 (Blue Chips):** JPM, V, MA, LLY, AVGO, XOM, JNJ, WMT, HD, COST
-- **Tier 3 (Everything else):** All other assets
-
-Within the same tier, picks randomly.
-
-**Best for:** Backing the "popular" picks that other voters likely choose.
-
-#### `underdog`
-Picks the asset with the *lower* market cap. The contrarian approach — smaller companies may have more upside, and the "underdog" narrative can be compelling in listing calls.
-
-**Best for:** Contrarian plays and supporting smaller companies.
-
-#### `demand`
-Picks based on Edel's actual Demand Index — the real voting history from the community. The asset ranked higher in the Demand Index (more wins, higher score) gets picked.
-
-Current top 5: NVDA > TSLA > NFLX > AAPL > MSFT
-
-This is the most data-driven strategy since it uses actual community behavior rather than assumptions.
-
-**Best for:** Aligning with proven community preferences — vote with the winners.
-
-#### `pick-<TICKER>`
-Always picks a specific ticker whenever it appears in a matchup. Falls back to random for matchups that don't include that ticker.
-
-Examples:
-```bash
-VOTE_STRATEGY=pick-NVDA    # Always pick Nvidia
-VOTE_STRATEGY=pick-AAPL    # Always pick Apple
-VOTE_STRATEGY=pick-PLTR    # Always pick Palantir
-```
-
-**Best for:** Conviction plays on a specific stock.
+See [strategies.js](src/bot/strategies.js) for detailed rankings and logic.
 
 ---
 
-## 📨 Telegram Notifications
+## ⏰ Smart Scheduling
 
-| Event | Message |
-|---|---|
-| ✅ Vote success | Assets picked, strategy, timestamp |
-| ❌ Vote failed | Error details, retry info |
-| ℹ️ Already voted | Round status, next schedule |
-| 🔑 Session expired | Re-import instructions |
-| 🤖 Bot started | Config summary |
-| ⏰ Next vote | Estimated next vote time |
-| 🛑 Bot stopped | Shutdown timestamp |
+The bot automatically syncs with Edel's round windows instead of using a fixed timer.
+
+**How it works:**
+1. After voting, the bot reads `nextRoundStartsAt` from the API
+2. Waits until that time + a random buffer of **+5 to +9 minutes**
+3. This random delay makes the bot look more human-like
+4. If round timing is unavailable (API down), falls back to fixed interval
+
+**Example:**
+```
+Round opens at 15:00 → Bot votes at 15:07 (+7 min buffer)
+Round opens at 16:00 → Bot votes at 16:05 (+5 min buffer)
+Round opens at 17:00 → Bot votes at 17:09 (+9 min buffer)
+```
+
+---
 
 ## ⚙️ Configuration (.env)
 
@@ -261,26 +252,29 @@ VOTE_STRATEGY=pick-PLTR    # Always pick Palantir
 | `TELEGRAM_CHAT_ID` | _(empty)_ | Your Telegram Chat ID |
 | `LOG_LEVEL` | `info` | `info` / `debug` for troubleshooting |
 
+---
+
 ## 📁 Folder Structure
 
 ```
 edel-runway-bot/
+├── accounts.txt            # Account list (edit this!)
+├── accounts.json           # Runtime state (auto-generated)
 ├── package.json
 ├── .env                    # Config (DO NOT COMMIT!)
 ├── .env.example            # Config template
-├── accounts.json           # Multi-account registry (auto-generated)
 ├── src/
 │   ├── index.js            # CLI entry point
 │   ├── accounts/
-│   │   └── manager.js      # Multi-account CRUD
+│   │   └── manager.js      # Multi-account manager
 │   ├── api/
 │   │   └── client.js       # HTTP API client (per-account session)
 │   ├── auth/
 │   │   ├── session.js      # Cookie import/export
-│   │   └── telegram-import.js
+│   │   └── telegram-import.js  # Telegram cookie refresh (A1: format)
 │   ├── bot/
 │   │   ├── voter.js        # Voting logic
-│   │   └── strategies.js   # Voting strategies
+│   │   └── strategies.js   # Voting strategies (9 strategies)
 │   ├── scheduler/
 │   │   └── cron.js         # Sequential multi-account scheduler
 │   └── utils/
@@ -292,25 +286,30 @@ edel-runway-bot/
 └── logs/                   # Log files
 ```
 
+---
+
 ## ⚠️ Troubleshooting
 
+### "No enabled accounts"
+Edit `accounts.txt` and add your accounts, then run `npm run import`.
+
 ### "SESSION_EXPIRED"
-The `edel_session` cookie has expired.
-→ Login again in Chrome → F12 → copy cookie → `npm run import`
+Paste new cookie in Telegram: `A1: edel_session=eyJ...`
 
 ### "No round available"
-No listing call window is currently open.
-→ The bot will automatically retry at the next scheduled interval.
+Between rounds — bot will auto-retry when calls open.
 
 ### Telegram notifications not working
-1. Make sure `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set in `.env`
-2. Send a message to your bot first (bots can't initiate conversations)
+1. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`
+2. Send a message to your bot first
 3. Check: `https://api.telegram.org/bot<TOKEN>/getUpdates`
 
 ### Debug mode
 ```bash
-LOG_LEVEL=debug npm run vote
+LOG_LEVEL=debug npm run start
 ```
+
+---
 
 ## 📜 Disclaimer
 

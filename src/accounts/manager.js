@@ -1,235 +1,177 @@
 /**
  * Multi-account manager.
  *
- * Each account has:
- *   - id: short label (A1, A2, A3, ...)
- *   - sessionFile: path to session JSON (cookies)
- *   - enabled: whether to include in vote cycles
- *   - lastVote: timestamp of last vote attempt
- *   - lastVoteStatus: 'voted' | 'already_voted' | 'failed' | null
- *   - nextVote: scheduled next vote time
+ * Accounts are defined in accounts.txt (one per line):
+ *   A1
+ *   A2
+ *   A3
  *
- * Accounts are stored in accounts.json at project root.
+ * Each account gets:
+ *   - sessions/A1.json, sessions/A2.json, etc.
+ *   - Auto-created on first run
+ *   - Enable/disable via accounts.json (auto-managed)
  */
 import fs from 'fs';
 import path from 'path';
 import config from '../utils/config.js';
 
 const ROOT = config.rootDir;
-const ACCOUNTS_FILE = path.join(ROOT, 'accounts.json');
+const ACCOUNTS_TXT = path.join(ROOT, 'accounts.txt');
+const ACCOUNTS_JSON = path.join(ROOT, 'accounts.json');
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
-function loadAccounts() {
-  if (!fs.existsSync(ACCOUNTS_FILE)) return [];
-  const raw = fs.readFileSync(ACCOUNTS_FILE, 'utf-8');
-  return JSON.parse(raw);
+/**
+ * Read account IDs from accounts.txt
+ * Returns array of strings like ['A1', 'A2', 'A3']
+ */
+function readAccountsTxt() {
+  if (!fs.existsSync(ACCOUNTS_TXT)) return [];
+  const raw = fs.readFileSync(ACCOUNTS_TXT, 'utf-8');
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('#'));
 }
 
 /**
- * Resolve relative sessionFile to absolute path when returning accounts.
+ * Load accounts.json (runtime state: enabled, lastVote, etc.)
  */
-function resolveAccount(account) {
-  return {
-    ...account,
-    sessionFile: path.isAbsolute(account.sessionFile)
-      ? account.sessionFile
-      : path.join(ROOT, account.sessionFile),
-  };
+function loadState() {
+  if (!fs.existsSync(ACCOUNTS_JSON)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(ACCOUNTS_JSON, 'utf-8'));
+  } catch {
+    return {};
+  }
 }
 
-function saveAccounts(accounts) {
-  fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2), 'utf-8');
+function saveState(state) {
+  fs.writeFileSync(ACCOUNTS_JSON, JSON.stringify(state, null, 2), 'utf-8');
 }
 
-function makeAccount(id, label = '') {
-  return {
-    id,
-    label: label || id,
-    sessionFile: `sessions/${id}.json`,
-    enabled: true,
-    lastVote: null,
-    lastVoteStatus: null,
-    nextVote: null,
-  };
+function resolveSessionFile(id) {
+  return path.join(ROOT, 'sessions', `${id}.json`);
 }
 
 /**
- * Derive the next available account ID (A1, A2, A3, …).
+ * Build full account objects by merging accounts.txt with accounts.json state.
  */
-function nextAvailableId(accounts) {
-  const taken = new Set(accounts.map((a) => a.id));
-  let n = 1;
-  while (taken.has(`A${n}`)) n++;
-  return `A${n}`;
+function buildAccounts() {
+  const ids = readAccountsTxt();
+  const state = loadState();
+
+  return ids.map((id) => {
+    const accState = state[id] || {};
+    return {
+      id,
+      sessionFile: resolveSessionFile(id),
+      enabled: accState.enabled !== false, // default true
+      lastVote: accState.lastVote || null,
+      lastVoteStatus: accState.lastVoteStatus || null,
+    };
+  });
 }
 
 // ─── Public API ─────────────────────────────────────────────────────
 
 /**
- * Return every account.
+ * Return every account defined in accounts.txt.
  */
 export function getAccounts() {
-  return loadAccounts().map(resolveAccount);
+  return buildAccounts();
 }
 
 /**
  * Return only enabled accounts.
  */
 export function getEnabledAccounts() {
-  return loadAccounts().filter((a) => a.enabled).map(resolveAccount);
+  return buildAccounts().filter((a) => a.enabled);
 }
 
 /**
- * Get a single account by id (e.g. 'A1').
- * Returns `undefined` when not found.
+ * Get a single account by id.
  */
 export function getAccount(id) {
-  const acc = loadAccounts().find((a) => a.id === id);
-  return acc ? resolveAccount(acc) : undefined;
+  return buildAccounts().find((a) => a.id === id);
 }
 
 /**
- * Add a new account.
- * @param {string} [id] — e.g. 'A1'. Auto-generated when omitted.
- * @param {string} [label] — human-friendly label (e.g. 'Main Account')
- * @returns {object} the newly created account record.
+ * Total number of accounts in accounts.txt.
  */
-export function addAccount(id, label) {
-  const accounts = loadAccounts();
-
-  if (!id) {
-    id = nextAvailableId(accounts);
-  }
-
-  if (accounts.some((a) => a.id === id)) {
-    throw new Error(`Account "${id}" already exists`);
-  }
-
-  const account = makeAccount(id, label);
-  accounts.push(account);
-  saveAccounts(accounts);
-
-  // Ensure sessions directory exists
-  const sessionDir = path.join(ROOT, 'sessions');
-  if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
-
-  return account;
-}
-
-/**
- * Remove an account and optionally delete its session file.
- * @param {string} id
- * @param {boolean} [deleteSession=true]
- */
-export function removeAccount(id, deleteSession = true) {
-  const accounts = loadAccounts();
-  const idx = accounts.findIndex((a) => a.id === id);
-  if (idx === -1) throw new Error(`Account "${id}" not found`);
-
-  const [removed] = accounts.splice(idx, 1);
-  saveAccounts(accounts);
-
-  if (deleteSession) {
-    const absSession = path.join(ROOT, removed.sessionFile);
-    if (fs.existsSync(absSession)) fs.unlinkSync(absSession);
-  }
-
-  return removed;
+export function getAccountCount() {
+  return readAccountsTxt().length;
 }
 
 /**
  * Enable an account.
  */
 export function enableAccount(id) {
-  const accounts = loadAccounts();
-  const account = accounts.find((a) => a.id === id);
-  if (!account) throw new Error(`Account "${id}" not found`);
-  account.enabled = true;
-  saveAccounts(accounts);
-  return account;
+  const state = loadState();
+  if (!state[id]) state[id] = {};
+  state[id].enabled = true;
+  saveState(state);
 }
 
 /**
  * Disable an account.
  */
 export function disableAccount(id) {
-  const accounts = loadAccounts();
-  const account = accounts.find((a) => a.id === id);
-  if (!account) throw new Error(`Account "${id}" not found`);
-  account.enabled = false;
-  saveAccounts(accounts);
-  return account;
+  const state = loadState();
+  if (!state[id]) state[id] = {};
+  state[id].enabled = false;
+  saveState(state);
 }
 
 /**
- * Update vote-related status fields for an account.
+ * Update vote status for an account.
  */
-export function updateAccountStatus(id, { lastVote, lastVoteStatus, nextVote } = {}) {
-  const accounts = loadAccounts();
-  const account = accounts.find((a) => a.id === id);
-  if (!account) throw new Error(`Account "${id}" not found`);
-
-  if (lastVote !== undefined) account.lastVote = lastVote;
-  if (lastVoteStatus !== undefined) account.lastVoteStatus = lastVoteStatus;
-  if (nextVote !== undefined) account.nextVote = nextVote;
-
-  saveAccounts(accounts);
-  return account;
+export function updateAccountStatus(id, { lastVote, lastVoteStatus } = {}) {
+  const state = loadState();
+  if (!state[id]) state[id] = {};
+  if (lastVote !== undefined) state[id].lastVote = lastVote;
+  if (lastVoteStatus !== undefined) state[id].lastVoteStatus = lastVoteStatus;
+  saveState(state);
 }
 
 /**
- * Save cookies to the account's session file.
- * @param {string} id
- * @param {Array} cookies
+ * Save cookies to an account's session file.
  */
-export function updateAccountSession(id, cookies) {
-  const accounts = loadAccounts();
-  const account = accounts.find((a) => a.id === id);
-  if (!account) throw new Error(`Account "${id}" not found`);
+export function saveAccountSession(id, cookies) {
+  const sessionFile = resolveSessionFile(id);
+  const dir = path.dirname(sessionFile);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   const state = {
     cookies,
-    origins: [
-      {
-        origin: 'https://runway.edel.finance',
-        localStorage: [],
-      },
-    ],
+    origins: [{ origin: 'https://runway.edel.finance', localStorage: [] }],
   };
-
-  const absPath = path.join(ROOT, account.sessionFile);
-  const dir = path.dirname(absPath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-  fs.writeFileSync(absPath, JSON.stringify(state, null, 2), 'utf-8');
-  return account;
+  fs.writeFileSync(sessionFile, JSON.stringify(state, null, 2), 'utf-8');
 }
 
 /**
- * Total number of accounts.
+ * Check if an account's session file exists.
  */
-export function getAccountCount() {
-  return loadAccounts().length;
+export function hasAccountSession(id) {
+  return fs.existsSync(resolveSessionFile(id));
 }
 
 /**
- * Migrate old single-account setup to multi-account.
- *
- * If `accounts.json` doesn't exist and the legacy `sessions/state.json`
- * exists, create the first account (A1) pointing at the copied session file.
+ * Migrate legacy single-account (sessions/state.json) to A1.
+ * Only runs if accounts.txt doesn't exist yet.
  */
 export function initDefaultAccount() {
-  if (fs.existsSync(ACCOUNTS_FILE)) return; // already initialised
+  if (fs.existsSync(ACCOUNTS_TXT)) return; // already set up
 
   const legacySession = path.join(ROOT, 'sessions', 'state.json');
-  if (!fs.existsSync(legacySession)) return; // nothing to migrate
+  if (!fs.existsSync(legacySession)) return;
 
-  const account = makeAccount('A1', 'Main');
-  const targetSession = path.join(ROOT, account.sessionFile);
+  // Create accounts.txt with A1
+  fs.writeFileSync(ACCOUNTS_TXT, 'A1\n', 'utf-8');
 
-  // Copy legacy session → A1 session
-  fs.copyFileSync(legacySession, targetSession);
+  // Copy legacy session → A1
+  const target = resolveSessionFile('A1');
+  fs.copyFileSync(legacySession, target);
 
-  saveAccounts([account]);
+  console.log('✅ Migrated legacy session to A1');
 }
