@@ -413,20 +413,22 @@ async function waitForLock(sessionFile, maxWaitSeconds = 120) {
         getCurrentRound(sessionFile),
         new Promise((_, reject) => setTimeout(() => reject(new Error('Poll timeout')), 10000)),
       ]);
-      const round = data?.round;
 
-      if (!round) {
-        logger.debug('No round data, waiting...');
+      // Debug: log what we got
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      const hasRound = !!data?.round;
+      const roundStatus = data?.round?.status || 'none';
+      const lockStatus = data?.round?.stakeLockStatus || 'none';
+      logger.info(`🔒 [${elapsed}s] hasRound=${hasRound}, status=${roundStatus}, lockStatus=${lockStatus}`);
+
+      if (!data?.round) {
+        logger.debug(`No round data. Keys: ${Object.keys(data || {}).join(', ')}`);
         await new Promise((resolve) => setTimeout(resolve, 5000));
         continue;
       }
 
-      const lockStatus = round.stakeLockStatus;
+      const round = data.round;
       const locked = round.lockedStakeAmount;
-      const roundStatus = round.status;
-      const elapsed = Math.round((Date.now() - startTime) / 1000);
-
-      logger.info(`🔒 [${elapsed}s] status=${roundStatus}, lockStatus=${lockStatus}, locked=${locked?.units || '0'}`);
 
       // Already submitted/done
       if (['SUBMITTED', 'SETTLEMENT_PENDING', 'SETTLED'].includes(roundStatus)) {
