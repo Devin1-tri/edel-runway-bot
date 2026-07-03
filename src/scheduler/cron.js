@@ -231,12 +231,15 @@ function scheduleNextVote(delayMs) {
       const { status, roundTiming } = await voteCycle();
       const nextDelay = getNextDelay(status, roundTiming);
       const scheduledTime = scheduleNextVote(nextDelay);
-      await notifyNextVote(scheduledTime);
+      // Only notify Telegram for meaningful schedules (not retry spam)
+      if (status === 'voted' || status === 'already_voted') {
+        await notifyNextVote(scheduledTime);
+      }
     } catch (err) {
       logger.error(`Scheduled vote cycle error: ${err.message}`);
       const retryDelay = config.retryIntervalMinutes * 60 * 1000;
       const scheduledTime = scheduleNextVote(retryDelay);
-      await notifyNextVote(scheduledTime);
+      // Don't spam Telegram on errors — log is enough
     }
   }, delayMs);
 
