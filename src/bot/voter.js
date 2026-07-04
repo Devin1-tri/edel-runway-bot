@@ -303,68 +303,25 @@ export async function performVote(account = null) {
 
     // Step 4: Window closed / failed?
     if (['EXPIRED', 'FAILED'].includes(parsed.status)) {
-      // Try to start a new round
-      const startAction = parsed.actions?.startRound || parsed.actions?.prepareRound;
-      if (startAction?.enabled !== false) {
-        logger.info('🚀 Starting new listing round...');
-        const startResult = await startRound(sessionFile);
-        logger.debug(`🔍 Start result: ${JSON.stringify(startResult).substring(0, 500)}`);
-        const newParsed = parseRoundData(startResult);
-        logger.info(`✅ New round: ${formatStatus(newParsed?.status)}`);
-
-        // If the new round is LOCKED, continue to vote below
-        if (newParsed?.status === 'LOCKED') {
-          return doVoting(newParsed, strategy);
-        }
-
-        return {
-          success: true,
-          roundTiming,
-          details: {
-            asset: 'N/A', strategy, round: newParsed?.roundId,
-            note: `Round started, status: ${formatStatus(newParsed?.status)}. Will vote when calls open.`,
-          },
-        };
-      }
-
-      const reason = startAction?.reason || 'No start action available';
-      logger.info(`⏳ Cannot start: ${reason}`);
+      // Don't start round — let server handle it to avoid EDELx lock corruption
+      logger.info(`⏳ Round ${formatStatus(parsed.status)}. Waiting for server to create new round...`);
       return {
         success: true,
         roundTiming,
-        details: { asset: 'N/A', strategy, round: 'N/A', note: `Window closed: ${reason}` },
+        details: {
+          asset: 'N/A', strategy, round: parsed.roundId,
+          note: `Round ${formatStatus(parsed.status)} — waiting for next round`,
+        },
       };
     }
 
-    // Step 5: No round at all? Try to start one.
+    // Step 5: No round at all? Wait for server to create it.
     if (!parsed.status) {
-      const startAction = parsed.actions?.startRound || parsed.actions?.prepareRound;
-      if (startAction?.enabled !== false) {
-        logger.info('🚀 No active round. Starting new one...');
-        const startResult = await startRound(sessionFile);
-        logger.debug(`🔍 Start result: ${JSON.stringify(startResult).substring(0, 500)}`);
-        const newParsed = parseRoundData(startResult);
-        logger.info(`✅ New round: ${formatStatus(newParsed?.status)}`);
-
-        if (newParsed?.status === 'LOCKED') {
-          return doVoting(newParsed, strategy);
-        }
-
-        return {
-          success: true,
-          roundTiming,
-          details: {
-            asset: 'N/A', strategy, round: newParsed?.roundId,
-            note: `Round started (${formatStatus(newParsed?.status)}). Will vote when calls open.`,
-          },
-        };
-      }
-
-      logger.info('⏳ No round and cannot start one.');
+      logger.info('⏳ No active round. Waiting for server to create one...');
       return {
         success: true,
         roundTiming,
-        details: { asset: 'N/A', strategy, round: 'N/A', note: 'No active round available' },
+        details: { asset: 'N/A', strategy, round: 'N/A', note: 'No active round — waiting for server' },
       };
     }
 
