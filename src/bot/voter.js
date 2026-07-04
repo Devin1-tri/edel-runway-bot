@@ -381,11 +381,13 @@ export async function performVote(account = null) {
         };
       }
 
-      logger.info(`${tag}⏳ No round and cannot prepare.`);
+      // prepareRound not enabled — round might already exist (started by another account)
+      // Return 'waiting' so bot retries on next cycle instead of giving up
+      logger.info(`${tag}⏳ Round already started by another account. Will retry.`);
       return {
         success: true,
         roundTiming,
-        details: { asset: 'N/A', strategy, round: 'N/A', note: 'No active round available' },
+        details: { asset: 'N/A', strategy, round: 'N/A', note: 'Round already started — retrying' },
       };
     }
 
