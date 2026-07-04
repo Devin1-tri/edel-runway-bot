@@ -399,6 +399,47 @@ function scheduleNextVote(delayMs) {
 }
 
 /**
+ * Background cookie listener — runs alongside vote scheduler.
+ * Continuously polls Telegram for cookie messages (A1: eyJ..., A2: eyJ...).
+ * Auto-saves cookies to account session files without blocking vote cycles.
+ */
+let _cookieListenerRunning = false;
+
+function startCookieListener() {
+  if (_cookieListenerRunning) return;
+  if (!config.telegramBotToken || !config.telegramChatId) return;
+
+  _cookieListenerRunning = true;
+  logger.info('🍪 Background cookie listener started');
+
+  // Import and run in background (non-blocking)
+  import('../auth/telegram-import.js').then(({ waitForCookieViaTelegram }) => {
+    const poll = async () => {
+      if (!_cookieListenerRunning) return;
+      try {
+        const result = await waitForCookieViaTelegram(1, null); // 1 min poll
+        if (result) {
+          logger.info(`🍪 Cookie received for ${result.accountId} via Telegram!`);
+          // Send success notification
+          await sendTelegram(`✅ *${result.accountId} SESSION UPDATED*\n\n🍪 Cookie saved. Bot will use it on next vote.`);
+        }
+      } catch (err) {
+        logger.debug(`Cookie listener error: ${err.message}`);
+      }
+      // Schedule next poll
+      if (_cookieListenerRunning) {
+        setTimeout(poll, 30000); // Check every 30s
+      }
+    };
+    poll();
+  });
+}
+
+function stopCookieListener() {
+  _cookieListenerRunning = false;
+}
+
+/**
  * Start the dynamic vote scheduler.
  */
 export async function startScheduler() {
@@ -420,6 +461,9 @@ export async function startScheduler() {
 
   await notifyBotStarted();
 
+  // Start background cookie listener for Telegram session updates
+  startCookieListener();
+
   logger.info('▶️  Running initial vote cycle...');
   const { overallStatus, roundTiming, nextDelay } = await voteAllAccounts();
 
@@ -431,6 +475,7 @@ export async function startScheduler() {
   const shutdown = async () => {
     logger.info('');
     logger.info('🛑 Bot stopping...');
+    stopCookieListener();
     destroyDisplay();
     if (nextVoteTimer) {
       clearTimeout(nextVoteTimer);
