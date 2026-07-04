@@ -493,6 +493,15 @@ async function doVoting(parsed, strategy, sessionFile = null, tag = '') {
 
       const isStakeLock = errMsg.includes('STAKE_LOCK_FAILED');
       const isInvalidPick = errMsg.includes('INVALID_PICK');
+      const isRateLimit = errMsg.includes('429') || errMsg.includes('Too Many Requests');
+
+      // Rate limit → longer backoff
+      if (isRateLimit && submitAttempt < MAX_SUBMIT_RETRIES) {
+        const backoff = 30000 * submitAttempt; // 30s, 60s, 90s
+        logger.info(`${tag}⏳ Rate limited (429). Waiting ${backoff/1000}s before retry...`);
+        await new Promise((resolve) => setTimeout(resolve, backoff));
+        continue;
+      }
 
       // INVALID_PICK = stale preview data → start fresh round to get new preview
       if (isInvalidPick && submitAttempt < MAX_SUBMIT_RETRIES) {

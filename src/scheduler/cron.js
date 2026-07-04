@@ -104,7 +104,9 @@ async function voteForAccount(account) {
     }
 
     if (attempt < config.maxRetries) {
-      const delay = config.retryDelay * attempt;
+      // Longer delay for rate limiting
+      const isRateLimit = (lastError || '').includes('429') || (lastError || '').includes('Too Many Requests');
+      const delay = isRateLimit ? 60000 * attempt : config.retryDelay * attempt; // 60s, 120s for 429
       logger.info(`${tag}⏳ Waiting ${delay / 1000}s before retry...`);
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
@@ -503,9 +505,9 @@ function startCookieListener() {
       logger.debug(`Cookie listener error: ${err.message}`);
     }
 
-    // Schedule next poll
+    // Schedule next poll (slower to avoid rate limits)
     if (_cookieListenerRunning) {
-      setTimeout(poll, 10000); // Check every 10s
+      setTimeout(poll, 60000); // Check every 60s (was 10s)
     }
   };
 
