@@ -277,16 +277,25 @@ async function voteAllAccounts() {
   // Calculate next vote time for notification
   let nextDelay = getNextDelay(overallStatus, roundTiming);
 
-  // If stuck waiting or partial (some voted, some waiting), use retry
+  // If stuck waiting or partial (some voted, some waiting), keep retrying
+  // as long as the round window is still open
   if (overallStatus === 'waiting' || overallStatus === 'partial') {
-    waitingRetryCount++;
-    logger.info(`⏳ ${overallStatus} retry: ${waitingRetryCount}/${MAX_WAITING_RETRIES}`);
-    if (waitingRetryCount >= MAX_WAITING_RETRIES) {
-      logger.info(`⏰ Waiting retry limit reached. Moving to next round.`);
-      waitingRetryCount = 0;
-      nextDelay = getNextDelay('voted', roundTiming); // Force sync with next round
+    // Check if round window is still open
+    const closesAt = roundTiming?.selectionClosesAt
+      ? new Date(roundTiming.selectionClosesAt).getTime()
+      : 0;
+    const now = Date.now();
+    const windowStillOpen = closesAt > 0 && now < closesAt;
+
+    if (windowStillOpen) {
+      // Round window still open — keep retrying
+      const remainingMin = Math.round((closesAt - now) / 60000);
+      logger.info(`⏳ ${overallStatus} — round window still open (${remainingMin} min left). Retrying in ${config.retryIntervalMinutes} min.`);
+      nextDelay = config.retryIntervalMinutes * 60 * 1000;
     } else {
-      nextDelay = config.retryIntervalMinutes * 60 * 1000; // Retry in 2 min
+      // Round window closed or unknown — move to next round
+      logger.info(`⏰ Round window closed. Moving to next round.`);
+      nextDelay = getNextDelay('voted', roundTiming);
     }
   } else {
     waitingRetryCount = 0; // Reset on success or failure
