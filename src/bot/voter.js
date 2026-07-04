@@ -303,25 +303,84 @@ export async function performVote(account = null) {
 
     // Step 4: Window closed / failed?
     if (['EXPIRED', 'FAILED'].includes(parsed.status)) {
-      // Don't start round — let server handle it to avoid EDELx lock corruption
-      logger.info(`⏳ Round ${formatStatus(parsed.status)}. Waiting for server to create new round...`);
+      // Try to prepare round (needed to open listing calls)
+      const startAction = parsed.actions?.startRound || parsed.actions?.prepareRound;
+      if (startAction?.enabled !== false) {
+        logger.info('🚀 Preparing listing round...');
+        try {
+          const startResult = await startRound(sessionFile);
+          const newParsed = parseRoundData(startResult);
+          logger.info(`✅ Round prepared: ${formatStatus(newParsed?.status)}`);
+
+          if (newParsed?.status === 'LOCKED') {
+            return doVoting(newParsed, strategy, sessionFile, tag);
+          }
+
+          return {
+            success: true,
+            roundTiming,
+            details: {
+              asset: 'N/A', strategy, round: newParsed?.roundId,
+              note: `Round preparing, status: ${formatStatus(newParsed?.status)}`,
+            },
+          };
+        } catch (err) {
+          // If prepare fails (PQS timeout, etc), don't retry — wait for server
+          logger.warn(`⚠️ Prepare failed: ${err.message.substring(0, 100)}. Waiting for server to recover.`);
+          return {
+            success: true,
+            roundTiming,
+            details: { asset: 'N/A', strategy, round: 'N/A', note: 'Prepare failed — waiting for server' },
+          };
+        }
+      }
+
+      const reason = startAction?.reason || 'No start action available';
+      logger.info(`⏳ Cannot prepare: ${reason}`);
       return {
         success: true,
         roundTiming,
-        details: {
-          asset: 'N/A', strategy, round: parsed.roundId,
-          note: `Round ${formatStatus(parsed.status)} — waiting for next round`,
-        },
+        details: { asset: 'N/A', strategy, round: 'N/A', note: `Cannot prepare: ${reason}` },
       };
     }
 
-    // Step 5: No round at all? Wait for server to create it.
+    // Step 5: No round at all? Try to prepare one.
     if (!parsed.status) {
-      logger.info('⏳ No active round. Waiting for server to create one...');
+      const startAction = parsed.actions?.startRound || parsed.actions?.prepareRound;
+      if (startAction?.enabled !== false) {
+        logger.info('🚀 No active round. Preparing...');
+        try {
+          const startResult = await startRound(sessionFile);
+          const newParsed = parseRoundData(startResult);
+          logger.info(`✅ Round prepared: ${formatStatus(newParsed?.status)}`);
+
+          if (newParsed?.status === 'LOCKED') {
+            return doVoting(newParsed, strategy, sessionFile, tag);
+          }
+
+          return {
+            success: true,
+            roundTiming,
+            details: {
+              asset: 'N/A', strategy, round: newParsed?.roundId,
+              note: `Round preparing (${formatStatus(newParsed?.status)})`,
+            },
+          };
+        } catch (err) {
+          logger.warn(`⚠️ Prepare failed: ${err.message.substring(0, 100)}. Waiting for server.`);
+          return {
+            success: true,
+            roundTiming,
+            details: { asset: 'N/A', strategy, round: 'N/A', note: 'Prepare failed — waiting for server' },
+          };
+        }
+      }
+
+      logger.info('⏳ No round and cannot prepare.');
       return {
         success: true,
         roundTiming,
-        details: { asset: 'N/A', strategy, round: 'N/A', note: 'No active round — waiting for server' },
+        details: { asset: 'N/A', strategy, round: 'N/A', note: 'No active round available' },
       };
     }
 
