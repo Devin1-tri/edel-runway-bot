@@ -36,6 +36,10 @@ let lastNotifiedState = null;
 // Track active timer for graceful shutdown
 let nextVoteTimer = null;
 
+// Track consecutive waiting cycles to avoid infinite retry
+let waitingRetryCount = 0;
+const MAX_WAITING_RETRIES = 3; // After 3 retries (6 min), move on
+
 // Delay between accounts (ms)
 const ACCOUNT_DELAY_MS = 1 * 60 * 1000; // 1 minute
 
@@ -247,7 +251,21 @@ async function voteAllAccounts() {
   }
 
   // Calculate next vote time for notification
-  const nextDelay = getNextDelay(overallStatus, roundTiming);
+  let nextDelay = getNextDelay(overallStatus, roundTiming);
+
+  // If stuck waiting too many times, force sync with next round
+  if (overallStatus === 'waiting') {
+    waitingRetryCount++;
+    logger.info(`⏳ Waiting retry: ${waitingRetryCount}/${MAX_WAITING_RETRIES}`);
+    if (waitingRetryCount >= MAX_WAITING_RETRIES) {
+      logger.info(`⏰ Waiting retry limit reached. Moving to next round.`);
+      waitingRetryCount = 0;
+      nextDelay = getNextDelay('voted', roundTiming); // Force sync with next round
+    }
+  } else {
+    waitingRetryCount = 0; // Reset on any non-waiting result
+  }
+
   const nextVoteTime = new Date(Date.now() + nextDelay);
 
   // Send consolidated notification
