@@ -227,10 +227,13 @@ async function voteAllAccounts() {
     }
 
     if (result.status === 'voted') {
-      overallStatus = 'voted';
-    } else if (result.status === 'already_voted' && overallStatus !== 'voted') {
-      overallStatus = 'already_voted';
-    } else if (result.status === 'failed' && overallStatus === 'waiting') {
+      if (overallStatus !== 'waiting') overallStatus = 'voted';
+    } else if (result.status === 'already_voted') {
+      if (overallStatus !== 'voted' && overallStatus !== 'waiting') overallStatus = 'already_voted';
+    } else if (result.status === 'waiting') {
+      // If ANY account is still waiting, don't skip to next round
+      overallStatus = 'waiting';
+    } else if (result.status === 'failed' && overallStatus !== 'waiting') {
       overallStatus = 'failed';
     }
   }
