@@ -27,6 +27,9 @@ const config = {
   maxRetries: parseInt(process.env.MAX_RETRIES || '3', 10),
   retryDelay: parseInt(process.env.RETRY_DELAY || '5000', 10),
 
+  // Multi-account
+  delayBetweenAccounts: parseInt(process.env.DELAY_BETWEEN_ACCOUNTS || '3000', 10),
+
   // Screenshots
   saveScreenshots: process.env.SAVE_SCREENSHOTS !== 'false',
 

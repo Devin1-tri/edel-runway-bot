@@ -24,6 +24,7 @@ import {
 } from '../utils/telegram.js';
 import {
   getEnabledAccounts,
+  getAccount,
   getAccountCount,
   updateAccountStatus,
   saveAccountSession,
@@ -40,8 +41,8 @@ let nextVoteTimer = null;
 let waitingRetryCount = 0;
 const MAX_WAITING_RETRIES = 8; // After 8 retries (16 min), move on
 
-// Delay between accounts (ms)
-const ACCOUNT_DELAY_MS = 1 * 60 * 1000; // 1 minute
+// Delay between accounts (ms) — configurable via DELAY_BETWEEN_ACCOUNTS
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Vote for a single account with retry logic.
@@ -236,8 +237,9 @@ async function voteAllAccounts() {
     const account = accounts[i];
 
     if (i > 0) {
-      logger.info(`⏳ Waiting 1 min before next account...`);
-      await new Promise((resolve) => setTimeout(resolve, ACCOUNT_DELAY_MS));
+      const delaySec = config.delayBetweenAccounts / 1000;
+      logger.info(`⏳ Waiting ${delaySec}s before next account...`);
+      await sleep(config.delayBetweenAccounts);
     }
 
     const result = await voteForAccount(account);
@@ -401,117 +403,198 @@ function scheduleNextVote(delayMs) {
 }
 
 /**
- * Background cookie listener — runs alongside vote scheduler.
- * Directly polls Telegram API for cookie messages (A1: eyJ..., A2: eyJ...).
- * Auto-saves cookies to account session files without blocking vote cycles.
+ * Background cookie listener — uses long polling (30s timeout).
+ * Parses format: "A1 eyJ..." or "A1 edel_session=eyJ..." or bulk.
+ * Auto-votes for imported accounts after 30s cooldown.
  */
 let _cookieListenerRunning = false;
-let _cookieOffset = 0;
-let _cookieOffsetInit = false;
+let _cookieVoteQueue = [];
+let _cookieVoteTimer = null;
 
 function startCookieListener() {
   if (_cookieListenerRunning) return;
   if (!config.telegramBotToken || !config.telegramChatId) return;
 
   _cookieListenerRunning = true;
-  logger.info('🍪 Background cookie listener started');
+  logger.info('🍪 Background cookie listener started (long polling)');
 
   const TELEGRAM_API = `https://api.telegram.org/bot${config.telegramBotToken}`;
+  let offset = 0;
+  let initialized = false;
 
-  const poll = async () => {
+  async function poll() {
     if (!_cookieListenerRunning) return;
 
     try {
-      // Init offset on first run
-      if (!_cookieOffsetInit) {
-        _cookieOffsetInit = true;
+      // Skip old messages on first poll
+      if (!initialized) {
+        initialized = true;
         try {
           const initRes = await fetch(`${TELEGRAM_API}/getUpdates?offset=-1&limit=1`);
           const initData = await initRes.json();
           if (initData.ok && initData.result.length > 0) {
-            _cookieOffset = initData.result[initData.result.length - 1].update_id + 1;
+            offset = initData.result[initData.result.length - 1].update_id + 1;
           }
         } catch (e) { /* ignore */ }
       }
 
-      // Poll for new messages
-      const res = await fetch(`${TELEGRAM_API}/getUpdates?offset=${_cookieOffset}&timeout=5`);
+      // Long polling — waits up to 30s for new messages (1 connection, not spam)
+      const res = await fetch(`${TELEGRAM_API}/getUpdates?offset=${offset}&timeout=30`);
       const data = await res.json();
 
       if (!data.ok) {
-        setTimeout(poll, 30000);
+        setTimeout(poll, 5000);
         return;
       }
 
       for (const update of data.result) {
-        _cookieOffset = update.update_id + 1;
+        offset = update.update_id + 1;
         const msg = update.message;
         if (!msg || !msg.text) continue;
         if (String(msg.chat.id) !== String(config.telegramChatId)) continue;
 
         const text = msg.text.trim();
-
-        // Skip short messages and commands
         if (text.length < 20 || text.startsWith('/')) continue;
 
-        // Parse account prefix: "A1: eyJ..." or "A2: edel_session=eyJ..."
-        let accountId = 'A1';
-        let cookieText = text;
-        const prefixMatch = text.match(/^(A\d+):\s*/i);
-        if (prefixMatch) {
-          accountId = prefixMatch[1].toUpperCase();
-          cookieText = text.substring(prefixMatch[0].length).trim();
-        }
+        // Parse entries — supports single "A1 cookie" or bulk "A1 cookie\nA2 cookie"
+        const entries = [];
+        const lines = text.split(/\n/);
+        let currentId = null;
+        let currentCookie = '';
 
-        // Parse cookies
-        let cookies = [];
-        if (cookieText.includes('edel_session=')) {
-          const pairs = cookieText.split(/;\s*/);
-          for (const pair of pairs) {
-            const eqIdx = pair.indexOf('=');
-            if (eqIdx === -1) continue;
-            const name = pair.substring(0, eqIdx).trim();
-            const value = pair.substring(eqIdx + 1).trim();
-            if (!name) continue;
-            cookies.push({ name, value, domain: 'runway.edel.finance', path: '/', expires: Date.now() / 1000 + 86400 * 30, httpOnly: false, secure: true, sameSite: 'Lax' });
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+
+          const idMatch = trimmed.match(/^(A\d+)[\s:]+(.*)/i);
+          if (idMatch) {
+            if (currentId && currentCookie.trim()) {
+              entries.push({ id: currentId, cookie: currentCookie.trim() });
+            }
+            currentId = idMatch[1].toUpperCase();
+            currentCookie = idMatch[2] || '';
+          } else if (currentId) {
+            currentCookie += (currentCookie ? '; ' : '') + trimmed;
           }
-          if (!cookies.some(c => c.name === 'edel_session')) cookies = [];
-        } else if (cookieText.startsWith('eyJ') && cookieText.length > 50 && !cookieText.includes(' ')) {
-          cookies = [{ name: 'edel_session', value: cookieText, domain: 'runway.edel.finance', path: '/', expires: Date.now() / 1000 + 86400 * 30, httpOnly: false, secure: true, sameSite: 'Lax' }];
+        }
+        if (currentId && currentCookie.trim()) {
+          entries.push({ id: currentId, cookie: currentCookie.trim() });
         }
 
-        if (cookies.length === 0) continue;
+        if (entries.length === 0) continue;
 
-        // Save to account
+        // Delete cookie message for security
         try {
-          saveAccountSession(accountId, cookies);
-          const preview = cookies.find(c => c.name === 'edel_session')?.value?.substring(0, 20) || 'N/A';
-          logger.info(`🍪 ${accountId} cookie received via Telegram! Token: ${preview}...`);
-          await sendTelegram(`✅ *${accountId} SESSION UPDATED*\n\n🍪 ${cookies.length} cookies saved\n🔑 Token: \`${preview}...\`\n\n▶️ Will use on next vote.`);
+          await fetch(`${TELEGRAM_API}/deleteMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: config.telegramChatId, message_id: msg.message_id }),
+          });
+        } catch (e) { /* ignore */ }
 
-          // Delete cookie message for security
+        // Import cookies instantly
+        const imported = [];
+        const failed = [];
+
+        for (const entry of entries) {
+          let cookies = [];
+          const cookieText = entry.cookie;
+
+          if (cookieText.includes('edel_session=')) {
+            const pairs = cookieText.split(/;\s*/);
+            for (const pair of pairs) {
+              const eqIdx = pair.indexOf('=');
+              if (eqIdx === -1) continue;
+              const name = pair.substring(0, eqIdx).trim();
+              const value = pair.substring(eqIdx + 1).trim();
+              if (!name) continue;
+              cookies.push({ name, value, domain: 'runway.edel.finance', path: '/', expires: Date.now() / 1000 + 86400 * 30, httpOnly: false, secure: true, sameSite: 'Lax' });
+            }
+            if (!cookies.some(c => c.name === 'edel_session')) cookies = [];
+          } else if (cookieText.startsWith('eyJ') && cookieText.length > 50 && !cookieText.includes(' ')) {
+            cookies = [{ name: 'edel_session', value: cookieText, domain: 'runway.edel.finance', path: '/', expires: Date.now() / 1000 + 86400 * 30, httpOnly: false, secure: true, sameSite: 'Lax' }];
+          }
+
+          if (cookies.length === 0) {
+            failed.push(`${entry.id}: invalid format`);
+            continue;
+          }
+
           try {
-            await fetch(`${TELEGRAM_API}/deleteMessage`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ chat_id: config.telegramChatId, message_id: msg.message_id }),
-            });
-          } catch (e) { /* ignore */ }
-        } catch (err) {
-          logger.debug(`Cookie save error for ${accountId}: ${err.message}`);
+            saveAccountSession(entry.id, cookies);
+            logger.info(`🍪 [${entry.id}] Cookie imported!`);
+            imported.push(entry.id);
+
+            // Add to vote queue (deduplicate)
+            if (!_cookieVoteQueue.includes(entry.id)) {
+              _cookieVoteQueue.push(entry.id);
+            }
+          } catch (err) {
+            failed.push(`${entry.id}: ${err.message}`);
+          }
         }
+
+        // Send import confirmation
+        const summaryLines = [];
+        if (imported.length > 0) {
+          summaryLines.push('✅ *SESSION UPDATED*');
+          summaryLines.push('');
+          summaryLines.push(`🍪 ${imported.length} account(s): ${imported.join(', ')}`);
+          summaryLines.push('');
+          summaryLines.push('⏳ Waiting 30s for more cookies before voting...');
+          summaryLines.push(`📋 Queue: ${_cookieVoteQueue.join(', ')}`);
+        }
+        if (failed.length > 0) {
+          summaryLines.push('');
+          summaryLines.push(`❌ Failed: ${failed.join(', ')}`);
+        }
+        if (summaryLines.length > 0) {
+          await sendTelegram(summaryLines.join('\n'));
+        }
+
+        // Reset 30s cooldown timer — vote starts after no new cookies for 30s
+        if (_cookieVoteTimer) clearTimeout(_cookieVoteTimer);
+        _cookieVoteTimer = setTimeout(() => processCookieVoteQueue(), 30 * 1000);
       }
     } catch (err) {
       logger.debug(`Cookie listener error: ${err.message}`);
     }
 
-    // Schedule next poll (slower to avoid rate limits)
+    // Continue polling
     if (_cookieListenerRunning) {
-      setTimeout(poll, 60000); // Check every 60s (was 10s)
+      setTimeout(poll, 1000);
     }
-  };
+  }
 
   poll();
+}
+
+/**
+ * Process queued accounts after 30s cookie cooldown.
+ */
+async function processCookieVoteQueue() {
+  _cookieVoteTimer = null;
+  if (_cookieVoteQueue.length === 0) return;
+
+  const accountIds = [..._cookieVoteQueue];
+  _cookieVoteQueue = [];
+
+  logger.info(`🍪 Cookie cooldown done. Voting ${accountIds.length} account(s): ${accountIds.join(', ')}`);
+  await sendTelegram(`▶️ *VOTING NOW*\n\n🍪 ${accountIds.length} account(s): ${accountIds.join(', ')}`);
+
+  for (const accountId of accountIds) {
+    const account = getAccount(accountId);
+    if (!account) continue;
+
+    try {
+      const result = await voteForAccount(account);
+      logger.info(`[${accountId}] Vote result: ${result.status}`);
+    } catch (err) {
+      logger.error(`[${accountId}] Auto-vote failed: ${err.message}`);
+    }
+
+    await sleep(config.delayBetweenAccounts);
+  }
 }
 
 function stopCookieListener() {
