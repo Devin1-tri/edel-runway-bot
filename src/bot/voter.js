@@ -433,45 +433,50 @@ async function waitForLock(sessionFile, maxWaitSeconds = 120) {
       // Debug: log what we got
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       const hasRound = !!data?.round;
+      const hasPreview = !!data?.preview;
       const roundStatus = data?.round?.status || 'none';
       const lockStatus = data?.round?.stakeLockStatus || 'none';
-      logger.info(`🔒 [${elapsed}s] hasRound=${hasRound}, status=${roundStatus}, lockStatus=${lockStatus}`);
+      const previewOptions = data?.preview?.options?.length || 0;
+      logger.info(`🔒 [${elapsed}s] hasRound=${hasRound}, hasPreview=${hasPreview}, status=${roundStatus}, lockStatus=${lockStatus}, previewOptions=${previewOptions}`);
 
-      if (!data?.round) {
-        logger.debug(`No round data. Keys: ${Object.keys(data || {}).join(', ')}`);
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-        continue;
+      // Check if round exists with lock data
+      if (data?.round) {
+        const round = data.round;
+        const locked = round.lockedStakeAmount;
+
+        // Already submitted/done
+        if (['SUBMITTED', 'SETTLEMENT_PENDING', 'SETTLED'].includes(round.status)) {
+          logger.info('✅ Round already submitted.');
+          return 'already_submitted';
+        }
+
+        // Lock failed
+        if (round.status === 'FAILED' || round.stakeLockStatus === 'failed_before_lock') {
+          logger.warn(`❌ Lock failed: ${round.failureReason || round.stakeLockStatus}`);
+          return 'failed';
+        }
+
+        // Lock complete
+        if (round.stakeLockStatus === 'locked' || (locked?.units && locked.units !== '0')) {
+          logger.info(`✅ EDELx lock complete! lockedStakeAmount=${locked?.units}`);
+          return 'ready';
+        }
+
+        // Round status LOCKED
+        if (round.status === 'LOCKED') {
+          logger.info('✅ Round status is LOCKED — ready to vote.');
+          return 'ready';
+        }
+
+        logger.info(`⏳ Round status: ${round.status}, lockStatus: ${round.stakeLockStatus}`);
       }
 
-      const round = data.round;
-      const locked = round.lockedStakeAmount;
-
-      // Already submitted/done
-      if (['SUBMITTED', 'SETTLEMENT_PENDING', 'SETTLED'].includes(roundStatus)) {
-        logger.info('✅ Round already submitted.');
-        return 'already_submitted';
+      // No round object yet — but preview exists means round is being prepared
+      if (data?.preview && previewOptions > 0) {
+        // Preview has options = round is prepared, just waiting for lock
+        // Check if we can submit directly (preview-based flow)
+        logger.info(`⏳ Preview ready with ${previewOptions} options. Waiting for round object...`);
       }
-
-      // Lock failed — round is broken
-      if (roundStatus === 'FAILED' || lockStatus === 'failed_before_lock') {
-        logger.warn(`❌ Lock failed: ${round.failureReason || lockStatus}`);
-        return 'failed';
-      }
-
-      // Lock complete!
-      if (lockStatus === 'locked' || (locked?.units && locked.units !== '0')) {
-        logger.info(`✅ EDELx lock complete! lockedStakeAmount=${locked?.units}`);
-        return 'ready';
-      }
-
-      // Round status LOCKED = also ready (some rounds don't have stakeLockStatus)
-      if (roundStatus === 'LOCKED') {
-        logger.info('✅ Round status is LOCKED — ready to vote.');
-        return 'ready';
-      }
-
-      // Still locking...
-      logger.info(`⏳ Still locking... (${elapsed}s elapsed)`);
       await new Promise((resolve) => setTimeout(resolve, 5000));
     } catch (err) {
       logger.debug(`Lock check error: ${err.message}`);
