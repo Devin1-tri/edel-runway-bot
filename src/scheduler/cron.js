@@ -166,6 +166,19 @@ function buildCycleNotification(results, nextVoteTime) {
     ].join('\n');
   }
 
+  // Partial success (some voted, some waiting)
+  if (waiting > 0 && voted > 0) {
+    return [
+      `⏳ *PARTIAL VOTE* (${voted}/${total} voted, ${waiting} waiting)`,
+      '',
+      ...lines,
+      '',
+      `🎯 Strategy: \`${config.voteStrategy}\``,
+      `🕐 Time: ${time}`,
+      `⏰ Retrying waiting accounts in 2 min...`,
+    ].join('\n');
+  }
+
   // Mixed or all success
   const header = failed > 0
     ? `⚠️ *VOTE CYCLE COMPLETE* (${voted}/${total})`
@@ -211,7 +224,9 @@ async function voteAllAccounts() {
   logger.info(`⏳ Stabilization delay: ${stabDelay}s...`);
   await new Promise((resolve) => setTimeout(resolve, stabDelay * 1000));
 
-  let overallStatus = 'waiting';
+  let votedCount = 0;
+  let waitingCount = 0;
+  let failedCount = 0;
   let roundTiming = null;
   const results = [];
 
@@ -230,16 +245,25 @@ async function voteAllAccounts() {
       roundTiming = result.roundTiming;
     }
 
-    if (result.status === 'voted') {
-      if (overallStatus !== 'waiting') overallStatus = 'voted';
-    } else if (result.status === 'already_voted') {
-      if (overallStatus !== 'voted' && overallStatus !== 'waiting') overallStatus = 'already_voted';
+    if (result.status === 'voted' || result.status === 'already_voted') {
+      votedCount++;
     } else if (result.status === 'waiting') {
-      // If ANY account is still waiting, don't skip to next round
-      overallStatus = 'waiting';
-    } else if (result.status === 'failed' && overallStatus !== 'waiting') {
-      overallStatus = 'failed';
+      waitingCount++;
+    } else {
+      failedCount++;
     }
+  }
+
+  // Determine overall status based on counts
+  let overallStatus;
+  if (waitingCount > 0 && votedCount > 0) {
+    overallStatus = 'partial'; // Some voted, some waiting — retry waiting accounts
+  } else if (waitingCount > 0) {
+    overallStatus = 'waiting'; // All waiting
+  } else if (votedCount > 0) {
+    overallStatus = 'voted'; // All voted
+  } else {
+    overallStatus = 'failed'; // All failed
   }
 
   // Summary log
@@ -253,17 +277,19 @@ async function voteAllAccounts() {
   // Calculate next vote time for notification
   let nextDelay = getNextDelay(overallStatus, roundTiming);
 
-  // If stuck waiting too many times, force sync with next round
-  if (overallStatus === 'waiting') {
+  // If stuck waiting or partial (some voted, some waiting), use retry
+  if (overallStatus === 'waiting' || overallStatus === 'partial') {
     waitingRetryCount++;
-    logger.info(`⏳ Waiting retry: ${waitingRetryCount}/${MAX_WAITING_RETRIES}`);
+    logger.info(`⏳ ${overallStatus} retry: ${waitingRetryCount}/${MAX_WAITING_RETRIES}`);
     if (waitingRetryCount >= MAX_WAITING_RETRIES) {
       logger.info(`⏰ Waiting retry limit reached. Moving to next round.`);
       waitingRetryCount = 0;
       nextDelay = getNextDelay('voted', roundTiming); // Force sync with next round
+    } else {
+      nextDelay = config.retryIntervalMinutes * 60 * 1000; // Retry in 2 min
     }
   } else {
-    waitingRetryCount = 0; // Reset on any non-waiting result
+    waitingRetryCount = 0; // Reset on success or failure
   }
 
   const nextVoteTime = new Date(Date.now() + nextDelay);
@@ -273,6 +299,7 @@ async function voteAllAccounts() {
   const shouldNotify = overallStatus === 'voted'
     || (overallStatus === 'already_voted' && lastNotifiedState !== 'already_voted')
     || (overallStatus === 'waiting' && lastNotifiedState !== 'waiting')
+    || (overallStatus === 'partial' && lastNotifiedState !== 'partial')
     || overallStatus === 'failed';
 
   if (shouldNotify) {
