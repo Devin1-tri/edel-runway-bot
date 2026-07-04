@@ -10,7 +10,6 @@
  *
  * Handles both Preview API (new) and Legacy API (old) response formats.
  */
-import fs from 'fs';
 import config from '../utils/config.js';
 import logger, { logVote, logSeparator } from '../utils/logger.js';
 import { getCurrentRound, startRound, submitPicks, getAssets } from '../api/client.js';
@@ -306,37 +305,41 @@ export async function performVote(account = null) {
       // Try to prepare round (needed to open listing calls)
       const startAction = parsed.actions?.startRound || parsed.actions?.prepareRound;
       if (startAction?.enabled !== false) {
-        logger.info('🚀 Preparing listing round...');
-        try {
-          const startResult = await startRound(sessionFile);
-          const newParsed = parseRoundData(startResult);
-          logger.info(`✅ Round prepared: ${formatStatus(newParsed?.status)}`);
+        logger.info(`${tag}🚀 Opening listing calls...`);
+        const startResult = await startRound(sessionFile);
+        const startParsed = parseRoundData(startResult);
+        logger.info(`${tag}✅ New round: ${formatStatus(startParsed?.status)}`);
 
-          if (newParsed?.status === 'LOCKED') {
-            return doVoting(newParsed, strategy, sessionFile, tag);
+        if (startParsed?.status === 'LOCKED' && startParsed.fixtures.length > 0) {
+          // Wait for stake lock to complete before submitting
+          logger.info(`${tag}⏳ Waiting 30s for stake lock...`);
+          await new Promise((resolve) => setTimeout(resolve, 30000));
+
+          // Re-fetch fresh data after the wait
+          logger.info(`${tag}📡 Re-fetching fresh round data...`);
+          const freshData = await getCurrentRound(sessionFile);
+          const freshParsed = parseRoundData(freshData);
+
+          if (freshParsed?.status === 'LOCKED' && freshParsed.fixtures.length > 0) {
+            const voteResult = await doVoting(freshParsed, strategy, sessionFile, tag);
+            voteResult.roundTiming = roundTiming;
+            return voteResult;
           }
-
-          return {
-            success: true,
-            roundTiming,
-            details: {
-              asset: 'N/A', strategy, round: newParsed?.roundId,
-              note: `Round preparing, status: ${formatStatus(newParsed?.status)}`,
-            },
-          };
-        } catch (err) {
-          // If prepare fails (PQS timeout, etc), don't retry — wait for server
-          logger.warn(`⚠️ Prepare failed: ${err.message.substring(0, 100)}. Waiting for server to recover.`);
-          return {
-            success: true,
-            roundTiming,
-            details: { asset: 'N/A', strategy, round: 'N/A', note: 'Prepare failed — waiting for server' },
-          };
         }
+
+        // Not ready yet — will retry on next cycle
+        return {
+          success: true,
+          roundTiming,
+          details: {
+            asset: 'N/A', strategy, round: startParsed?.roundId,
+            note: `Round opened (${formatStatus(startParsed?.status)}). Will vote when ready.`,
+          },
+        };
       }
 
       const reason = startAction?.reason || 'No start action available';
-      logger.info(`⏳ Cannot prepare: ${reason}`);
+      logger.info(`${tag}⏳ Cannot prepare: ${reason}`);
       return {
         success: true,
         roundTiming,
@@ -348,35 +351,37 @@ export async function performVote(account = null) {
     if (!parsed.status) {
       const startAction = parsed.actions?.startRound || parsed.actions?.prepareRound;
       if (startAction?.enabled !== false) {
-        logger.info('🚀 No active round. Preparing...');
-        try {
-          const startResult = await startRound(sessionFile);
-          const newParsed = parseRoundData(startResult);
-          logger.info(`✅ Round prepared: ${formatStatus(newParsed?.status)}`);
+        logger.info(`${tag}🚀 No active round. Opening listing calls...`);
+        const startResult = await startRound(sessionFile);
+        const startParsed = parseRoundData(startResult);
+        logger.info(`${tag}✅ New round: ${formatStatus(startParsed?.status)}`);
 
-          if (newParsed?.status === 'LOCKED') {
-            return doVoting(newParsed, strategy, sessionFile, tag);
+        if (startParsed?.status === 'LOCKED' && startParsed.fixtures.length > 0) {
+          logger.info(`${tag}⏳ Waiting 30s for stake lock...`);
+          await new Promise((resolve) => setTimeout(resolve, 30000));
+
+          logger.info(`${tag}📡 Re-fetching fresh round data...`);
+          const freshData = await getCurrentRound(sessionFile);
+          const freshParsed = parseRoundData(freshData);
+
+          if (freshParsed?.status === 'LOCKED' && freshParsed.fixtures.length > 0) {
+            const voteResult = await doVoting(freshParsed, strategy, sessionFile, tag);
+            voteResult.roundTiming = roundTiming;
+            return voteResult;
           }
-
-          return {
-            success: true,
-            roundTiming,
-            details: {
-              asset: 'N/A', strategy, round: newParsed?.roundId,
-              note: `Round preparing (${formatStatus(newParsed?.status)})`,
-            },
-          };
-        } catch (err) {
-          logger.warn(`⚠️ Prepare failed: ${err.message.substring(0, 100)}. Waiting for server.`);
-          return {
-            success: true,
-            roundTiming,
-            details: { asset: 'N/A', strategy, round: 'N/A', note: 'Prepare failed — waiting for server' },
-          };
         }
+
+        return {
+          success: true,
+          roundTiming,
+          details: {
+            asset: 'N/A', strategy, round: startParsed?.roundId,
+            note: `Round opened (${formatStatus(startParsed?.status)}). Will vote when ready.`,
+          },
+        };
       }
 
-      logger.info('⏳ No round and cannot prepare.');
+      logger.info(`${tag}⏳ No round and cannot prepare.`);
       return {
         success: true,
         roundTiming,
@@ -405,169 +410,135 @@ export async function performVote(account = null) {
 }
 
 /**
- * Wait for EDELx lock to complete before submitting.
- * Polls the round status until stakeLockStatus indicates lock is done.
- *
- * stakeLockStatus values (observed):
- *   - "locked"             → lock complete, ready to vote
- *   - "failed_before_lock" → lock failed, round is FAILED
- *   - "pending" / other    → still locking, wait
- *
- * @returns 'ready' | 'already_submitted' | 'failed' | 'timeout'
- */
-async function waitForLock(sessionFile, maxWaitSeconds = 120) {
-  const startTime = Date.now();
-  const maxWaitMs = maxWaitSeconds * 1000;
-
-  logger.info('⏳ Waiting for EDELx lock to complete...');
-
-  while (Date.now() - startTime < maxWaitMs) {
-    try {
-      // Use the existing API client (handles auth correctly)
-      // Wrap with timeout to prevent hanging on slow API
-      const data = await Promise.race([
-        getCurrentRound(sessionFile),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Poll timeout')), 10000)),
-      ]);
-
-      // Debug: log what we got
-      const elapsed = Math.round((Date.now() - startTime) / 1000);
-      const hasRound = !!data?.round;
-      const hasPreview = !!data?.preview;
-      const roundStatus = data?.round?.status || 'none';
-      const lockStatus = data?.round?.stakeLockStatus || 'none';
-      const previewOptions = data?.preview?.options?.length || 0;
-      logger.info(`🔒 [${elapsed}s] hasRound=${hasRound}, hasPreview=${hasPreview}, status=${roundStatus}, lockStatus=${lockStatus}, previewOptions=${previewOptions}`);
-
-      // Check if round exists with lock data
-      if (data?.round) {
-        const round = data.round;
-        const locked = round.lockedStakeAmount;
-
-        // Already submitted/done
-        if (['SUBMITTED', 'SETTLEMENT_PENDING', 'SETTLED'].includes(round.status)) {
-          logger.info('✅ Round already submitted.');
-          return 'already_submitted';
-        }
-
-        // Lock failed
-        if (round.status === 'FAILED' || round.stakeLockStatus === 'failed_before_lock') {
-          logger.warn(`❌ Lock failed: ${round.failureReason || round.stakeLockStatus}`);
-          return 'failed';
-        }
-
-        // Lock complete
-        if (round.stakeLockStatus === 'locked' || (locked?.units && locked.units !== '0')) {
-          logger.info(`✅ EDELx lock complete! lockedStakeAmount=${locked?.units}`);
-          return 'ready';
-        }
-
-        // Round status LOCKED
-        if (round.status === 'LOCKED') {
-          logger.info('✅ Round status is LOCKED — ready to vote.');
-          return 'ready';
-        }
-
-        logger.info(`⏳ Round status: ${round.status}, lockStatus: ${round.stakeLockStatus}`);
-      }
-
-      // No round object yet — but preview exists means round is being prepared
-      if (data?.preview && previewOptions > 0) {
-        // Preview has options = round is prepared, just waiting for lock
-        // Check if we can submit directly (preview-based flow)
-        logger.info(`⏳ Preview ready with ${previewOptions} options. Waiting for round object...`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-    } catch (err) {
-      logger.debug(`Lock check error: ${err.message}`);
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-    }
-  }
-
-  logger.warn(`⏰ Lock wait timeout (${maxWaitSeconds}s). Proceeding anyway.`);
-  return 'timeout';
-}
-
-/**
- * Actually perform voting on open fixtures
+ * Actually perform voting on open fixtures.
+ * Includes retry logic for transient submit errors (STAKE_LOCK_FAILED, INVALID_PICK).
  */
 async function doVoting(parsed, strategy, sessionFile = null, tag = '') {
-  const { roundId, fixtures, isPreview } = parsed;
-  logger.info(`${tag}✅ Calls are OPEN! ${fixtures.length} head-to-head fixtures`);
-
-  // Wait for EDELx lock to complete before submitting
-  const lockStatus = await waitForLock(sessionFile);
-  if (lockStatus === 'already_submitted') {
-    return { success: true, details: { note: 'Already submitted (lock was complete)', strategy, round: roundId } };
-  }
-  if (lockStatus === 'failed') {
-    return { success: false, details: { error: 'EDELx lock failed — round is broken', strategy, round: roundId } };
-  }
+  const MAX_SUBMIT_RETRIES = 5;
 
   // Load assets for display
   let assetMap = new Map();
   try {
     const assets = await getAssets(sessionFile);
     assetMap = new Map(assets.map((a) => [a.id || a.assetId, a]));
-    logger.debug(`📦 Loaded ${assetMap.size} assets`);
   } catch (err) {
     logger.debug(`Could not load assets: ${err.message}`);
   }
 
-  // Make selections for each fixture
-  const picks = [];
-  for (let i = 0; i < fixtures.length; i++) {
-    const fixture = fixtures[i];
-    const { id, teamAId, teamBId, selectedTeamId } = getFixtureTeams(fixture);
+  /**
+   * Build picks from parsed round data
+   */
+  function buildPicks(roundParsed) {
+    const { fixtures } = roundParsed;
+    const newPicks = [];
+    for (let i = 0; i < fixtures.length; i++) {
+      const fixture = fixtures[i];
+      const { id, teamAId, teamBId, selectedTeamId } = getFixtureTeams(fixture);
 
-    if (!teamAId || !teamBId) {
-      logger.debug(`   ${i + 1}. Skipping fixture (missing teams): ${JSON.stringify(fixture).substring(0, 200)}`);
-      continue;
+      if (!teamAId || !teamBId) {
+        logger.debug(`   ${i + 1}. Skipping (missing teams): ${JSON.stringify(fixture).substring(0, 150)}`);
+        continue;
+      }
+
+      if (selectedTeamId) {
+        const selected = assetMap.get(selectedTeamId);
+        logger.info(`   ${i + 1}. Already picked: ${selected?.ticker || selectedTeamId}`);
+        newPicks.push({ roundDecisionId: id, assetId: selectedTeamId });
+        continue;
+      }
+
+      const selectedId = selectTeam(teamAId, teamBId, assetMap, strategy);
+      newPicks.push({ roundDecisionId: id, assetId: selectedId });
     }
-
-    // If already selected, keep it
-    if (selectedTeamId) {
-      const selected = assetMap.get(selectedTeamId);
-      logger.info(`   ${i + 1}. Already picked: ${selected?.ticker || selectedTeamId}`);
-      picks.push({ roundDecisionId: id, assetId: selectedTeamId });
-      continue;
-    }
-
-    // Make a new selection
-    const selectedId = selectTeam(teamAId, teamBId, assetMap, strategy);
-    picks.push({ roundDecisionId: id, assetId: selectedId });
+    return newPicks;
   }
 
+  // Build initial picks
+  let { roundId, fixtures, isPreview } = parsed;
+  logger.info(`${tag}✅ Calls are OPEN! ${fixtures.length} head-to-head fixtures`);
+  let picks = buildPicks(parsed);
+
   if (picks.length === 0) {
-    logger.warn('⚠️  No picks to submit.');
+    logger.warn(`${tag}⚠️  No picks to submit.`);
     return { success: false, details: { error: 'No valid fixtures to pick', strategy } };
   }
 
-  // Submit all picks
-  logger.info(`📤 Submitting ${picks.length} picks for round ${roundId}...`);
-  const result = await submitPicks(roundId, picks, { isPreview, sessionFile });
+  // Submit picks — retry with SAME payload on STAKE_LOCK_FAILED
+  // On INVALID_PICK: start fresh round → rebuild picks → retry
+  for (let submitAttempt = 1; submitAttempt <= MAX_SUBMIT_RETRIES; submitAttempt++) {
+    logger.info(`${tag}📤 Submitting ${picks.length} picks (attempt ${submitAttempt}/${MAX_SUBMIT_RETRIES})...`);
 
-  const newParsed = parseRoundData(result);
-  logger.info(`✅ Picks submitted! Status: ${formatStatus(newParsed?.status)}`);
+    try {
+      const result = await submitPicks(roundId, picks, { isPreview, sessionFile });
+      const newParsed = parseRoundData(result);
+      logger.info(`${tag}✅ Picks submitted! Status: ${formatStatus(newParsed?.status)}`);
 
-  // Extract timing from submit response (may be in round.timing or currentWindow.timing)
-  const submitTiming = newParsed?.currentWindow?.timing
-    || result?.currentWindow?.timing
-    || result?.round?.timing
-    || newParsed?.raw?.round?.timing
-    || null;
+      // Extract timing from submit response
+      const submitTiming = newParsed?.currentWindow?.timing
+        || result?.currentWindow?.timing
+        || result?.round?.timing
+        || newParsed?.raw?.round?.timing
+        || null;
 
-  const pickedAssets = picks
-    .map((p) => assetMap.get(p.assetId)?.ticker || 'unknown')
-    .join(', ');
+      const pickedAssets = picks.map((p) => assetMap.get(p.assetId)?.ticker || 'unknown').join(', ');
+      const details = { asset: pickedAssets, strategy, round: roundId, fixtureCount: fixtures.length };
+      logVote(true, details);
+      return { success: true, details, roundTiming: submitTiming };
 
-  const details = {
-    asset: pickedAssets,
-    strategy,
-    round: roundId,
-    fixtureCount: fixtures.length,
-  };
+    } catch (submitErr) {
+      const errMsg = submitErr.message;
+      logger.warn(`${tag}⚠️  Submit attempt ${submitAttempt} failed: ${errMsg.substring(0, 200)}`);
 
-  logVote(true, details);
-  return { success: true, details, roundTiming: submitTiming };
+      const isStakeLock = errMsg.includes('STAKE_LOCK_FAILED');
+      const isInvalidPick = errMsg.includes('INVALID_PICK');
+
+      // INVALID_PICK = stale preview data → start fresh round to get new preview
+      if (isInvalidPick && submitAttempt < MAX_SUBMIT_RETRIES) {
+        logger.info(`${tag}🔄 INVALID_PICK: refreshing calls (starting new round)...`);
+        try {
+          const freshStart = await startRound(sessionFile);
+          const freshParsed = parseRoundData(freshStart);
+
+          if (freshParsed?.status === 'LOCKED' && freshParsed.fixtures.length > 0) {
+            logger.info(`${tag}⏳ Waiting 8s for stake lock...`);
+            await new Promise((resolve) => setTimeout(resolve, 8000));
+
+            // Re-fetch after wait
+            const freshData = await getCurrentRound(sessionFile);
+            const reParsed = parseRoundData(freshData);
+
+            if (reParsed?.status === 'LOCKED' && reParsed.fixtures.length > 0) {
+              // Rebuild picks with FRESH data
+              roundId = reParsed.roundId;
+              fixtures = reParsed.fixtures;
+              isPreview = reParsed.isPreview;
+              picks = buildPicks(reParsed);
+              logger.info(`${tag}🔄 Got fresh preview: ${roundId?.substring(0, 50)}..., ${fixtures.length} fixtures`);
+              continue; // retry submit with new data
+            }
+          }
+        } catch (refreshErr) {
+          logger.warn(`${tag}⚠️  Refresh failed: ${refreshErr.message.substring(0, 100)}`);
+        }
+      }
+
+      // STAKE_LOCK_FAILED → retry with same payload after short delay
+      if (isStakeLock && submitAttempt < MAX_SUBMIT_RETRIES) {
+        logger.info(`${tag}⏳ STAKE_LOCK_FAILED: waiting 5s before retry...`);
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        continue;
+      }
+
+      // Other errors or last attempt
+      if (submitAttempt >= MAX_SUBMIT_RETRIES) {
+        logger.error(`${tag}❌ All ${MAX_SUBMIT_RETRIES} submit attempts failed.`);
+        return { success: false, details: { error: errMsg.substring(0, 200), strategy } };
+      }
+
+      // Generic retry delay
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+  }
+
+  return { success: false, details: { error: 'Max submit retries exceeded', strategy } };
 }
