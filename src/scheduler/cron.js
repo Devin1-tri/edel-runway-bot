@@ -38,7 +38,7 @@ let nextVoteTimer = null;
 
 // Track consecutive waiting cycles to avoid infinite retry
 let waitingRetryCount = 0;
-const MAX_WAITING_RETRIES = 3; // After 3 retries (6 min), move on
+const MAX_WAITING_RETRIES = 8; // After 8 retries (16 min), move on
 
 // Delay between accounts (ms)
 const ACCOUNT_DELAY_MS = 1 * 60 * 1000; // 1 minute
