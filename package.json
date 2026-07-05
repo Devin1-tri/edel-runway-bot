@@ -11,13 +11,22 @@
     "status": "node src/index.js status",
     "accounts": "node src/index.js accounts"
   },
-  "keywords": ["edel", "runway", "bot", "vote"],
+  "keywords": [
+    "edel",
+    "runway",
+    "bot",
+    "vote"
+  ],
   "license": "MIT",
   "dependencies": {
-    "node-cron": "^3.0.3",
+    "chalk": "^5.4.1",
     "dotenv": "^16.5.0",
-    "winston": "^3.17.0",
-    "chalk": "^5.4.1"
+    "https-proxy-agent": "^9.1.0",
+    "node-cron": "^3.0.3",
+    "node-fetch": "^2.7.0",
+    "socks-proxy-agent": "^10.1.0",
+    "undici": "^8.7.0",
+    "winston": "^3.17.0"
   },
   "engines": {
     "node": ">=18.0.0"

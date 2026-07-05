@@ -39,6 +39,7 @@ const config = {
 
   // URLs
   baseUrl: process.env.BASE_URL || 'https://runway.edel.finance',
+  proxyUrl: process.env.PROXY_URL || '',
   listingCallsUrl: `${process.env.BASE_URL || 'https://runway.edel.finance'}/listing-calls`,
   loginUrl: `${process.env.BASE_URL || 'https://runway.edel.finance'}/login`,
 

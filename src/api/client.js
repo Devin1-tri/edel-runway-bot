@@ -22,6 +22,23 @@ import { loadSession } from '../auth/session.js';
 
 const BASE_URL = config.baseUrl; // https://runway.edel.finance
 
+// Proxy support — set PROXY_URL in .env
+// Supports: socks5://host:port, http://host:port, https://host:port
+let fetchWithProxy = globalThis.fetch; // default: no proxy
+let proxyInfo = 'none';
+
+if (config.proxyUrl) {
+  try {
+    const undici = await import('undici');
+    const dispatcher = new undici.ProxyAgent(config.proxyUrl);
+    fetchWithProxy = (url, opts = {}) => undici.fetch(url, { ...opts, dispatcher });
+    proxyInfo = config.proxyUrl;
+    logger.info(`🔒 Proxy: ${config.proxyUrl}`);
+  } catch (e) {
+    logger.warn(`⚠️ Proxy setup failed: ${e.message}. Using direct connection.`);
+  }
+}
+
 /**
  * Build Cookie header string from saved session cookies.
  * @param {string|null} sessionFile - Path to session JSON (null = default)
@@ -76,7 +93,7 @@ async function apiFetch(path, options = {}, sessionFile = null) {
 
   logger.debug(`📡 ${method} ${path}`);
 
-  const res = await fetch(url, {
+  const res = await fetchWithProxy(url, {
     method,
     headers,
     body: options.body,
